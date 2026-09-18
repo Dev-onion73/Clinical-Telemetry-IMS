@@ -1,0 +1,18 @@
+Measurement:
+    vitals
+
+Tags:
+    patient_id
+    encounter_id
+    device_id
+
+Fields:
+    spo2
+    heart_rate
+    temperature
+    respiratory_rate
+    systolic_bp
+    diastolic_bp
+
+Timestamp:
+    measurement timestamp

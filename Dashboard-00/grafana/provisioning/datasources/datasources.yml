@@ -1,0 +1,40 @@
+apiVersion: 1
+
+datasources:
+
+  - name: Clinical PostgreSQL
+    uid: clinical-postgres
+    type: postgres
+    access: proxy
+
+    url: clinical-postgres:5432
+    user: clinical
+
+    jsonData:
+      database: clinical
+      sslmode: disable
+      postgresVersion: 1700
+
+    secureJsonData:
+      password: clinical123
+
+    isDefault: true
+    editable: false
+
+
+  - name: Clinical InfluxDB
+    uid: clinical-influxdb
+    type: influxdb
+    access: proxy
+
+    url: http://clinical-influxdb:8086
+
+    jsonData:
+      version: Flux
+      organization: clinical
+      defaultBucket: vitals
+
+    secureJsonData:
+      token: clinical-token
+
+    editable: false
