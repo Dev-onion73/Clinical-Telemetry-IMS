@@ -1,0 +1,52 @@
+services:
+
+  tempo:
+    image: grafana/tempo:3.0.0
+    container_name: clinical-tempo
+    restart: unless-stopped
+
+    command:
+      - "-config.file=/etc/tempo/tempo.yml"
+
+    ports:
+      - "3200:3200"
+      - "4317:4317"
+      - "4318:4318"
+
+    volumes:
+      - ./tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+
+    networks:
+      - clinical-net
+
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: clinical-otel-collector
+    restart: unless-stopped
+
+    command:
+      - "--config=/etc/otelcol-contrib/otel-collector.yml"
+
+    ports:
+      - "4319:4317"
+      - "4320:4318"
+
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otelcol-contrib/otel-collector.yml:ro
+
+    depends_on:
+      - tempo
+
+    networks:
+      - clinical-net
+
+
+networks:
+  clinical-net:
+    external: true
+
+
+volumes:
+  tempo-data:
