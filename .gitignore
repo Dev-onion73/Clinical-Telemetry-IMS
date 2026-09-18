@@ -1,2 +1,4 @@
 */.dump
 .dump
+.venv
+*/.venv
