@@ -5,13 +5,6 @@ from opentelemetry.trace import Span
 
 
 class EncounterSpanRegistry:
-    """
-    Process-local registry for currently open Encounter spans.
-
-    The database stores the Encounter's trace_id and span_id.
-    This registry stores the actual recording Span object so that
-    a later request can continue the Encounter lifecycle and end it.
-    """
 
     def __init__(self):
         self._spans: dict[str, Span] = {}

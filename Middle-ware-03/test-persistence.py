@@ -1,206 +1,198 @@
-from datetime import datetime, timedelta, timezone
-import time
+from datetime import datetime, timezone
+from typing import Optional
 
-from app.tracing.provider import configure_tracing
-from app.tracing.context import serialize_span_context, context_from_ids
-from app.services.trace_service import TraceService
 from opentelemetry import trace
+from opentelemetry.trace import Span
+
+from app.tracing.context import context_from_ids
+from app.tracing.provider import get_tracer
+from app.tracing.registry import encounter_span_registry
 
 
-# ---------------------------------------------------------------------
-# Simulated process-local registry
-# ---------------------------------------------------------------------
+def datetime_to_ns(
+    value: Optional[datetime],
+) -> Optional[int]:
+    if value is None:
+        return None
 
-ENCOUNTER_SPANS = {}
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
 
-
-def register_encounter(encounter_id: str, span):
-    ENCOUNTER_SPANS[encounter_id] = span
-
-
-def get_encounter_span(encounter_id: str):
-    return ENCOUNTER_SPANS.get(encounter_id)
+    return int(value.timestamp() * 1_000_000_000)
 
 
-def remove_encounter(encounter_id: str):
-    ENCOUNTER_SPANS.pop(encounter_id, None)
+class TraceService:
 
-
-# ---------------------------------------------------------------------
-# Test
-# ---------------------------------------------------------------------
-
-def main():
-    configure_tracing()
-
-    trace_service = TraceService()
-
-    base = datetime.now(timezone.utc)
-
-    encounter_id = "E-TEST-001"
-    patient_id = "PAT-TEST-001"
+    def __init__(self):
+        self.tracer = get_tracer()
 
     # ================================================================
-    # REQUEST 1
-    # Start Encounter
+    # ENCOUNTER
     # ================================================================
 
-    print("\n=== REQUEST 1: START ENCOUNTER ===")
+    def start_encounter(
+        self,
+        encounter_id: str,
+        patient_id: str,
+        encounter_type: str,
+        start_reason: str,
+        actor_id: str,
+        actor_role: str,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
 
-    encounter_span = trace_service.start_encounter(
-        encounter_id=encounter_id,
-        patient_id=patient_id,
-        encounter_type="EMERGENCY",
-        start_reason="Test admission",
-        actor_id="ADMIN-001",
-        actor_role="ADMIN",
-        start_time=base,
-    )
-
-    # Keep the REAL recording span alive.
-    register_encounter(
-        encounter_id,
-        encounter_span,
-    )
-
-    persisted_context = serialize_span_context(
-        encounter_span
-    )
-
-    print(
-        "Encounter trace_id:",
-        persisted_context["trace_id"],
-    )
-
-    print(
-        "Encounter span_id:",
-        persisted_context["span_id"],
-    )
-
-    print(
-        "Encounter recording:",
-        encounter_span.is_recording(),
-    )
-
-    # Simulate request boundary.
-    del encounter_span
-
-    # ================================================================
-    # REQUEST 2
-    # Create Journal under persisted Encounter context
-    # ================================================================
-
-    print("\n=== REQUEST 2: CREATE JOURNAL ===")
-
-    parent_context = context_from_ids(
-        trace_id=persisted_context["trace_id"],
-        span_id=persisted_context["span_id"],
-    )
-
-    journal_span = trace_service.tracer.start_span(
-        name="clinical.journal.activity",
-        context=parent_context,
-        start_time=int(
-            (base + timedelta(seconds=5)).timestamp()
-            * 1_000_000_000
-        ),
-    )
-
-    journal_span.set_attribute(
-        "clinical.journal.id",
-        "JRN-TEST-001",
-    )
-
-    journal_span.set_attribute(
-        "clinical.journal.type",
-        "FIXED_ACTIVITY",
-    )
-
-    journal_span.set_attribute(
-        "clinical.actor.id",
-        "STAFF-001",
-    )
-
-    journal_span.set_attribute(
-        "clinical.actor.role",
-        "STAFF",
-    )
-
-    journal_span.end(
-        int(
-            (base + timedelta(seconds=8)).timestamp()
-            * 1_000_000_000
-        )
-    )
-
-    print(
-        "Journal trace_id:",
-        format(
-            journal_span.get_span_context().trace_id,
-            "032x",
-        ),
-    )
-
-    print(
-        "Journal span_id:",
-        format(
-            journal_span.get_span_context().span_id,
-            "016x",
-        ),
-    )
-
-    print(
-        "Journal parent_span_id:",
-        format(
-            journal_span.parent.span_id,
-            "016x",
-        ),
-    )
-
-    print(
-        "Expected parent_span_id:",
-        persisted_context["span_id"],
-    )
-
-    # ================================================================
-    # REQUEST 3
-    # End Encounter
-    # ================================================================
-
-    print("\n=== REQUEST 3: END ENCOUNTER ===")
-
-    encounter_span = get_encounter_span(
-        encounter_id
-    )
-
-    if encounter_span is None:
-        raise RuntimeError(
-            "Encounter span was not found in registry"
+        span = self.tracer.start_span(
+            name="clinical.encounter",
+            start_time=datetime_to_ns(start_time),
         )
 
-    trace_service.end_encounter(
-        span=encounter_span,
-        end_time=base + timedelta(seconds=15),
-        end_reason="Test discharge",
-        actor_id="ADMIN-001",
-        actor_role="ADMIN",
-    )
+        span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
 
-    remove_encounter(encounter_id)
+        span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
 
-    print(
-        "Encounter recording after end:",
-        encounter_span.is_recording(),
-    )
+        span.set_attribute(
+            "clinical.encounter.type",
+            encounter_type,
+        )
 
-    print("Encounter removed from registry.")
+        span.set_attribute(
+            "clinical.encounter.start_reason",
+            start_reason,
+        )
 
-    # Give BatchSpanProcessor time to export.
-    print("\nWaiting for spans to export...")
-    time.sleep(5)
+        span.set_attribute(
+            "clinical.actor.id",
+            actor_id,
+        )
 
-    print("\n=== TEST COMPLETE ===")
+        span.set_attribute(
+            "clinical.actor.role",
+            actor_role,
+        )
 
+        # Keep the actual recording span alive while the
+        # Encounter remains open.
+        encounter_span_registry.register(
+            encounter_id,
+            span,
+        )
 
-if __name__ == "__main__":
-    main()
+        return span
+
+    def end_encounter(
+        self,
+        encounter_id: str,
+        end_time: Optional[datetime] = None,
+        end_reason: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
+    ) -> None:
+
+        span = encounter_span_registry.get(
+            encounter_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for "
+                f"{encounter_id}"
+            )
+
+        if end_reason is not None:
+            span.set_attribute(
+                "clinical.encounter.end_reason",
+                end_reason,
+            )
+
+        if actor_id is not None:
+            span.set_attribute(
+                "clinical.encounter.end_actor.id",
+                actor_id,
+            )
+
+        if actor_role is not None:
+            span.set_attribute(
+                "clinical.encounter.end_actor.role",
+                actor_role,
+            )
+
+        span.end(
+            end_time=datetime_to_ns(end_time)
+        )
+
+        # Remove only after the recording span has been ended.
+        encounter_span_registry.remove(
+            encounter_id
+        )
+
+    # ================================================================
+    # ENCOUNTER CONTEXT
+    # ================================================================
+
+    def get_encounter_context(
+        self,
+        encounter_id: str,
+    ):
+        """
+        Return an OTel Context containing the live Encounter span.
+        """
+
+        span = encounter_span_registry.get(
+            encounter_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for "
+                f"{encounter_id}"
+            )
+
+        return trace.set_span_in_context(
+            span
+        )
+
+    # ================================================================
+    # CHILD SPANS
+    # ================================================================
+
+    def start_child_span(
+        self,
+        name: str,
+        parent_span: Span,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
+
+        parent_context = trace.set_span_in_context(
+            parent_span
+        )
+
+        return self.tracer.start_span(
+            name=name,
+            context=parent_context,
+            start_time=datetime_to_ns(start_time),
+        )
+
+    def start_child_span_from_context(
+        self,
+        name: str,
+        parent_trace_id: str,
+        parent_span_id: str,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
+
+        parent_context = context_from_ids(
+            parent_trace_id,
+            parent_span_id,
+        )
+
+        return self.tracer.start_span(
+            name=name,
+            context=parent_context,
+            start_time=datetime_to_ns(start_time),
+        )

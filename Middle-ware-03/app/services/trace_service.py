@@ -4,10 +4,14 @@ from typing import Optional
 from opentelemetry import trace
 from opentelemetry.trace import Span
 
-from app.tracing.provider import get_tracer
 from app.tracing.context import context_from_ids
+from app.tracing.provider import get_tracer
+from app.tracing.registry import encounter_span_registry
 
-def datetime_to_ns(value: Optional[datetime]) -> Optional[int]:
+
+def datetime_to_ns(
+    value: Optional[datetime],
+) -> Optional[int]:
     if value is None:
         return None
 
@@ -18,8 +22,13 @@ def datetime_to_ns(value: Optional[datetime]) -> Optional[int]:
 
 
 class TraceService:
+
     def __init__(self):
         self.tracer = get_tracer()
+
+    # ================================================================
+    # ENCOUNTER
+    # ================================================================
 
     def start_encounter(
         self,
@@ -41,37 +50,59 @@ class TraceService:
             "clinical.encounter.id",
             encounter_id,
         )
+
         span.set_attribute(
             "clinical.patient.id",
             patient_id,
         )
+
         span.set_attribute(
             "clinical.encounter.type",
             encounter_type,
         )
+
         span.set_attribute(
             "clinical.encounter.start_reason",
             start_reason,
         )
+
         span.set_attribute(
             "clinical.actor.id",
             actor_id,
         )
+
         span.set_attribute(
             "clinical.actor.role",
             actor_role,
+        )
+
+        # Keep the actual recording Encounter span alive
+        # while the Encounter remains open.
+        encounter_span_registry.register(
+            encounter_id,
+            span,
         )
 
         return span
 
     def end_encounter(
         self,
-        span: Span,
+        encounter_id: str,
         end_time: Optional[datetime] = None,
         end_reason: Optional[str] = None,
         actor_id: Optional[str] = None,
         actor_role: Optional[str] = None,
     ) -> None:
+
+        span = encounter_span_registry.get(
+            encounter_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for "
+                f"{encounter_id}"
+            )
 
         if end_reason is not None:
             span.set_attribute(
@@ -95,6 +126,37 @@ class TraceService:
             end_time=datetime_to_ns(end_time)
         )
 
+        # The Span is no longer needed once it has ended.
+        encounter_span_registry.remove(
+            encounter_id
+        )
+
+    # ================================================================
+    # ENCOUNTER CONTEXT
+    # ================================================================
+
+    def get_encounter_context(
+        self,
+        encounter_id: str,
+    ):
+        span = encounter_span_registry.get(
+            encounter_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for "
+                f"{encounter_id}"
+            )
+
+        return trace.set_span_in_context(
+            span
+        )
+
+    # ================================================================
+    # CHILD SPAN
+    # ================================================================
+
     def start_child_span(
         self,
         name: str,
@@ -102,14 +164,15 @@ class TraceService:
         start_time: Optional[datetime] = None,
     ) -> Span:
 
-        parent_context = trace.set_span_in_context(parent_span)
+        parent_context = trace.set_span_in_context(
+            parent_span
+        )
 
         return self.tracer.start_span(
             name=name,
             context=parent_context,
             start_time=datetime_to_ns(start_time),
         )
-
 
     def start_child_span_from_context(
         self,
@@ -118,12 +181,12 @@ class TraceService:
         parent_span_id: str,
         start_time: Optional[datetime] = None,
     ) -> Span:
-    
+
         parent_context = context_from_ids(
             parent_trace_id,
             parent_span_id,
         )
-    
+
         return self.tracer.start_span(
             name=name,
             context=parent_context,
