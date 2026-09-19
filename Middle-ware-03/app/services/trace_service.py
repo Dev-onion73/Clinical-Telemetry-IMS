@@ -5,7 +5,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Span
 
 from app.tracing.provider import get_tracer
-
+from app.tracing.context import context_from_ids
 
 def datetime_to_ns(value: Optional[datetime]) -> Optional[int]:
     if value is None:
@@ -104,6 +104,26 @@ class TraceService:
 
         parent_context = trace.set_span_in_context(parent_span)
 
+        return self.tracer.start_span(
+            name=name,
+            context=parent_context,
+            start_time=datetime_to_ns(start_time),
+        )
+
+
+    def start_child_span_from_context(
+        self,
+        name: str,
+        parent_trace_id: str,
+        parent_span_id: str,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
+    
+        parent_context = context_from_ids(
+            parent_trace_id,
+            parent_span_id,
+        )
+    
         return self.tracer.start_span(
             name=name,
             context=parent_context,
