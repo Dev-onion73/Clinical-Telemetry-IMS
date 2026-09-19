@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from opentelemetry import trace
 from opentelemetry.trace import Span
 
 from app.tracing.provider import get_tracer
