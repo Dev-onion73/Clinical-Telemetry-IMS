@@ -7,7 +7,7 @@ from opentelemetry.trace import Span
 from app.tracing.context import context_from_ids
 from app.tracing.provider import get_tracer
 from app.tracing.registry import encounter_span_registry
-
+from app.tracing.episode_registry import episode_span_registry
 
 def datetime_to_ns(
     value: Optional[datetime],
@@ -314,4 +314,97 @@ class TraceService:
 
         span.end(
             end_time=datetime_to_ns(end_time)
+        )
+
+    def start_episode(
+        self,
+        episode_id: str,
+        patient_id: str,
+        encounter_id: str,
+        initiated_by: str,
+        initiation_reason: str,
+        source_journal_id: str,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
+
+        encounter_span = encounter_span_registry.get(
+            encounter_id
+        )
+
+        if encounter_span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for {encounter_id}"
+            )
+
+        span = self.start_child_span(
+            name="clinical.episode",
+            parent_span=encounter_span,
+            start_time=start_time,
+        )
+
+        span.set_attribute(
+            "clinical.episode.id",
+            episode_id,
+        )
+
+        span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+        span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+
+        span.set_attribute(
+            "clinical.episode.initiated_by",
+            initiated_by,
+        )
+
+        span.set_attribute(
+            "clinical.episode.initiation_reason",
+            initiation_reason,
+        )
+
+        span.set_attribute(
+            "clinical.episode.source_journal_id",
+            source_journal_id,
+        )
+
+        episode_span_registry.register(
+            episode_id,
+            span,
+        )
+
+        return span
+
+    def end_episode(
+        self,
+        episode_id: str,
+        end_time: datetime,
+        closure_by: Optional[str] = None,
+    ) -> None:
+
+        span = episode_span_registry.get(
+            episode_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Episode span found for {episode_id}"
+            )
+
+        if closure_by is not None:
+            span.set_attribute(
+                "clinical.episode.closure_by",
+                closure_by,
+            )
+
+        span.end(
+            end_time=datetime_to_ns(end_time)
+        )
+
+        episode_span_registry.remove(
+            episode_id
         )

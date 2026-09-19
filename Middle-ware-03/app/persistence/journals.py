@@ -15,6 +15,8 @@ class JournalRepository:
         author_role: str,
         timestamp: datetime,
         content: str,
+        entry_type: str = "EVENT",
+        episode_id: Optional[str] = None,
     ) -> dict[str, Any]:
 
         query = """
@@ -25,7 +27,9 @@ class JournalRepository:
                 author_id,
                 author_role,
                 timestamp,
-                content
+                content,
+                entry_type,
+                episode_id
             )
             VALUES (
                 %s,
@@ -34,6 +38,8 @@ class JournalRepository:
                 %s,
                 %s,
                 %s,
+                %s,
+                %s::journal_entry_type,
                 %s
             )
             RETURNING
@@ -45,12 +51,13 @@ class JournalRepository:
                 timestamp,
                 content,
                 created_at,
-                updated_at
+                updated_at,
+                entry_type,
+                episode_id
         """
 
         with get_connection() as connection:
             with connection.cursor() as cursor:
-
                 cursor.execute(
                     query,
                     (
@@ -61,6 +68,8 @@ class JournalRepository:
                         author_role,
                         timestamp,
                         content,
+                        entry_type,
+                        episode_id,
                     ),
                 )
 
@@ -76,9 +85,7 @@ class JournalRepository:
                     for description in cursor.description
                 ]
 
-                return dict(
-                    zip(columns, row)
-                )
+                return dict(zip(columns, row))
 
     def get(
         self,
@@ -95,14 +102,15 @@ class JournalRepository:
                 timestamp,
                 content,
                 created_at,
-                updated_at
+                updated_at,
+                entry_type,
+                episode_id
             FROM journals
             WHERE journal_id = %s
         """
 
         with get_connection() as connection:
             with connection.cursor() as cursor:
-
                 cursor.execute(
                     query,
                     (journal_id,),
@@ -118,8 +126,30 @@ class JournalRepository:
                     for description in cursor.description
                 ]
 
-                return dict(
-                    zip(columns, row)
+                return dict(zip(columns, row))
+
+    def update_episode_identity(
+        self,
+        journal_id: str,
+        episode_id: str,
+    ) -> None:
+
+        query = """
+            UPDATE journals
+            SET
+                entry_type = 'EPISODE_START',
+                episode_id = %s
+            WHERE journal_id = %s
+        """
+
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    query,
+                    (
+                        episode_id,
+                        journal_id,
+                    ),
                 )
 
     def delete(
