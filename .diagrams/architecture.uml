@@ -1,0 +1,172 @@
+@startuml
+title Healthcare Incident Management - System Architecture
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+actor "Nurse / Doctor" as User
+
+package "Patient / Clinical Sources" {
+
+    component "Patient Monitors\n& Vitals Sources" as VitalsSource
+    component "Clinical Journal UI" as JournalUI
+    component "Clinical Procedure /\nAction UI" as ClinicalUI
+}
+
+package "Ingestion & Application Layer" {
+
+    component "Kafka" as Kafka
+    component "Python Vitals\nConsumer" as VitalsConsumer
+
+    component "FastAPI\nClinical Backend" as Backend
+}
+
+package "Authoritative Data Systems" {
+
+    database "InfluxDB\n\nHigh-volume Vitals" as Influx
+
+    database "PostgreSQL\n\nClinical Journals\nPatient / Encounter Data" as ClinicalDB
+
+    database "PostgreSQL\n\nClinical Episodes" as EpisodeDB
+}
+
+package "Alert & Incident Response" {
+
+    component "Grafana Alerting" as GrafanaAlert
+
+    component "IncidentRelay\n\nBroadcast / Dispatch\nResponder Claim\nEscalation" as IncidentRelay
+}
+
+package "Clinical Trace Layer" {
+
+    component "OpenTelemetry\nInstrumentation" as OTel
+    database "Grafana Tempo\n\nClinical Traces\nSpans + Events" as Tempo
+}
+
+package "Visualization & Correlation" {
+
+    component "Grafana\n\nDashboards / Correlation /\nCross-source Navigation" as Grafana
+}
+
+
+' =========================================================
+' VITALS PIPELINE
+' =========================================================
+
+VitalsSource --> Kafka : physiological measurements
+Kafka --> VitalsConsumer : consume
+VitalsConsumer --> Influx : write vitals
+
+Influx --> Grafana : query vitals
+
+
+' =========================================================
+' CLINICAL JOURNALS
+' =========================================================
+
+User --> JournalUI : document observation
+JournalUI --> Backend : journal request
+Backend --> ClinicalDB : store journal
+
+ClinicalDB --> Grafana : query journals
+
+
+' =========================================================
+' CLINICAL ACTIONS
+' =========================================================
+
+User --> ClinicalUI : clinical action
+ClinicalUI --> Backend : clinical operation
+Backend --> ClinicalDB : patient / encounter data
+
+
+' =========================================================
+' ALERTING / PAGING
+' =========================================================
+
+Influx --> GrafanaAlert : evaluate alert rules
+GrafanaAlert --> IncidentRelay : alert
+
+IncidentRelay --> User : broadcast notification
+User --> IncidentRelay : accept / claim
+
+IncidentRelay --> Backend : incident / responder state
+
+
+' =========================================================
+' EPISODE LIFECYCLE
+' =========================================================
+
+Backend --> EpisodeDB : create / update episode
+
+EpisodeDB --> Grafana : query episodes
+
+
+' =========================================================
+' TRACE CREATION
+' =========================================================
+
+Backend --> OTel : create spans / events
+OTel --> Tempo : OTLP
+
+Tempo --> Grafana : query traces
+
+
+' =========================================================
+' CROSS-SOURCE CORRELATION
+' =========================================================
+
+Grafana ..> Influx : patient_id / encounter_id / time
+Grafana ..> ClinicalDB : patient_id / encounter_id / time
+Grafana ..> EpisodeDB : episode_id / trace_id
+Grafana ..> IncidentRelay : paging incident
+Grafana ..> Tempo : trace_id / time
+
+
+' =========================================================
+' IDENTIFIER RELATIONSHIPS
+' =========================================================
+
+note right of EpisodeDB
+Episode contains:
+
+episode_id
+patient_id
+encounter_id
+trace_id
+initiated_by
+initiation_method
+source_paging_incident_id
+start_time
+end_time
+status
+closure_by
+closure_time
+end note
+
+note right of IncidentRelay
+Operational responsibility:
+
+- Broadcast
+- Responder acceptance
+- Incident ownership
+- Escalation
+- Notification state
+
+Not stored in clinical Episode DB.
+end note
+
+note right of Tempo
+Tempo reconstructs the trace
+from OpenTelemetry identifiers:
+
+trace_id
+span_id
+parent_span_id
+
+Tempo does not determine
+clinical episode semantics.
+end note
+
+@enduml

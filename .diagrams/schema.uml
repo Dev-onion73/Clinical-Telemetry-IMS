@@ -1,0 +1,130 @@
+@startuml
+title Healthcare Incident Management — Cross-Source Schema Relations
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam linetype ortho
+
+package "Tempo — Trace Store" as TEMPO {
+    entity "Trace" as TRACE {
+        trace_id
+        patient_id
+        encounter_id
+        start_time
+        end_time
+    }
+
+    entity "Span" as SPAN {
+        span_id
+        trace_id
+        parent_span_id
+        name
+        start_time
+        duration
+        attributes
+    }
+
+    entity "Span Event" as SEVENT {
+        event_id
+        span_id
+        event_type
+        event_time
+        attributes
+    }
+
+    TRACE ||--o{ SPAN : trace_id
+    SPAN ||--o{ SEVENT : span_id
+}
+
+package "InfluxDB — Vitals" as INFLUX {
+    entity "Vital Observation" as VITAL {
+        observation_id
+        patient_id
+        encounter_id
+        metric_type
+        value
+        unit
+        measurement_time
+        device_id
+        quality
+    }
+}
+
+package "PostgreSQL — Staff Journals / Logs" as PGLOG {
+    entity "Journal / Log" as LOG {
+        record_id
+        patient_id
+        encounter_id
+        source_type
+        record_time
+        author_id
+        content
+    }
+}
+
+package "PostgreSQL — Alerts" as PGALERT {
+    entity "Alarm" as ALARM {
+        alarm_id
+        patient_id
+        encounter_id
+        alarm_type
+        severity
+        source_type
+        source_id
+        start_time
+        end_time
+        status
+    }
+
+    entity "Alarm Event" as AEVENT {
+        alarm_event_id
+        alarm_id
+        event_type
+        event_time
+        actor_id
+        source_id
+    }
+
+    ALARM ||--o{ AEVENT : alarm_id
+}
+
+' =========================================================
+' CROSS-SOURCE CORRELATION
+' =========================================================
+
+TRACE .. VITAL : "temporal correlation\npatient_id + encounter_id\n+ span start/end"
+
+SPAN .. VITAL : "timeline query\nmeasurement_time"
+
+TRACE .. LOG : "reference / temporal correlation\npatient_id + encounter_id\n+ record_time"
+
+SPAN .. LOG : "review context\nspan time range"
+
+SPAN .. ALARM : "alarm reference / timeline\nalarm_id + timestamps"
+
+SEVENT .. AEVENT : "trigger / lifecycle reference\nalarm_id + event_time"
+
+VITAL .. ALARM : "alarm source correlation\nobservation_id / source_id\n+ measurement_time"
+
+' =========================================================
+' LEGEND
+' =========================================================
+
+legend right
+  ..>  Cross-source correlation/reference
+       NOT a SQL foreign key
+
+  Each source remains independently
+  authoritative for its own records.
+
+  Tempo = trace hierarchy
+  InfluxDB = physiological time series
+  PostgreSQL Logs = journals/log records
+  PostgreSQL Alerts = alarm lifecycle
+
+  Grafana consumes/correlates these sources
+  for unified review.
+endlegend
+
+@enduml
