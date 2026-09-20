@@ -7,18 +7,25 @@ from opentelemetry.trace import Span
 from app.tracing.context import context_from_ids
 from app.tracing.provider import get_tracer
 from app.tracing.registry import encounter_span_registry
+from app.tracing.journal_registry import journal_span_registry
 from app.tracing.episode_registry import episode_span_registry
+
 
 def datetime_to_ns(
     value: Optional[datetime],
 ) -> Optional[int]:
+
     if value is None:
         return None
 
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
+        value = value.replace(
+            tzinfo=timezone.utc
+        )
 
-    return int(value.timestamp() * 1_000_000_000)
+    return int(
+        value.timestamp() * 1_000_000_000
+    )
 
 
 class TraceService:
@@ -44,7 +51,9 @@ class TraceService:
 
         span = self.tracer.start_span(
             name="clinical.encounter",
-            start_time=datetime_to_ns(start_time),
+            start_time=datetime_to_ns(
+                start_time
+            ),
         )
 
         span.set_attribute(
@@ -93,7 +102,7 @@ class TraceService:
     def end_encounter(
         self,
         encounter_id: str,
-        end_time: Optional[datetime] = None,
+        end_time: datetime,
         end_reason: Optional[str] = None,
         actor_id: Optional[str] = None,
         actor_role: Optional[str] = None,
@@ -106,8 +115,7 @@ class TraceService:
 
         if span is None:
             raise RuntimeError(
-                f"No active Encounter span found for "
-                f"{encounter_id}"
+                f"No active Encounter span found for {encounter_id}"
             )
 
         if end_reason is not None:
@@ -135,7 +143,9 @@ class TraceService:
             )
 
         span.end(
-            end_time=datetime_to_ns(end_time)
+            end_time=datetime_to_ns(
+                end_time
+            )
         )
 
         encounter_span_registry.remove(
@@ -143,7 +153,7 @@ class TraceService:
         )
 
     # ========================================================
-    # CHILD SPAN
+    # GENERIC CHILD SPAN
     # ========================================================
 
     def start_child_span(
@@ -162,7 +172,9 @@ class TraceService:
         return self.tracer.start_span(
             name=name,
             context=parent_context,
-            start_time=datetime_to_ns(start_time),
+            start_time=datetime_to_ns(
+                start_time
+            ),
         )
 
     def start_child_span_from_context(
@@ -181,140 +193,14 @@ class TraceService:
         return self.tracer.start_span(
             name=name,
             context=parent_context,
-            start_time=datetime_to_ns(start_time),
-        )
-
-    # ========================================================
-    # JOURNAL EVENT
-    # ========================================================
-
-    def create_journal_event(
-        self,
-        encounter_id: str,
-        journal_id: str,
-        patient_id: str,
-        author_id: str,
-        author_role: str,
-        content: str,
-        timestamp: Optional[datetime] = None,
-    ) -> None:
-
-        encounter_span = (
-            encounter_span_registry.get(
-                encounter_id
-            )
-        )
-
-        if encounter_span is None:
-            raise RuntimeError(
-                f"No active Encounter span found for "
-                f"{encounter_id}"
-            )
-
-        encounter_span.add_event(
-            name="clinical.journal.event",
-            timestamp=datetime_to_ns(
-                timestamp
+            start_time=datetime_to_ns(
+                start_time
             ),
-            attributes={
-                "clinical.journal.id": journal_id,
-                "clinical.patient.id": patient_id,
-                "clinical.actor.id": author_id,
-                "clinical.actor.role": author_role,
-                "clinical.journal.content": content,
-            },
         )
 
     # ========================================================
-    # JOURNAL ACTIVITY
+    # EPISODE
     # ========================================================
-
-    def start_journal_activity(
-        self,
-        encounter_id: str,
-        journal_id: str,
-        patient_id: str,
-        author_id: str,
-        author_role: str,
-        content: str,
-        start_time: Optional[datetime] = None,
-    ) -> Span:
-
-        encounter_span = (
-            encounter_span_registry.get(
-                encounter_id
-            )
-        )
-
-        if encounter_span is None:
-            raise RuntimeError(
-                f"No active Encounter span found for "
-                f"{encounter_id}"
-            )
-
-        span = self.start_child_span(
-            name="clinical.journal.activity",
-            parent_span=encounter_span,
-            start_time=start_time,
-        )
-
-        span.set_attribute(
-            "clinical.journal.id",
-            journal_id,
-        )
-
-        span.set_attribute(
-            "clinical.patient.id",
-            patient_id,
-        )
-
-        span.set_attribute(
-            "clinical.actor.id",
-            author_id,
-        )
-
-        span.set_attribute(
-            "clinical.actor.role",
-            author_role,
-        )
-
-        span.set_attribute(
-            "clinical.journal.content",
-            content,
-        )
-
-        return span
-
-    def end_journal_activity(
-        self,
-        span: Span,
-        end_time: Optional[datetime] = None,
-        end_reason: Optional[str] = None,
-        actor_id: Optional[str] = None,
-        actor_role: Optional[str] = None,
-    ) -> None:
-
-        if end_reason is not None:
-            span.set_attribute(
-                "clinical.journal.end_reason",
-                end_reason,
-            )
-
-        if actor_id is not None:
-            span.set_attribute(
-                "clinical.journal.end_actor.id",
-                actor_id,
-            )
-
-        if actor_role is not None:
-            span.set_attribute(
-                "clinical.journal.end_actor.role",
-                actor_role,
-            )
-
-        span.end(
-            end_time=datetime_to_ns(end_time)
-        )
 
     def start_episode(
         self,
@@ -327,8 +213,10 @@ class TraceService:
         start_time: Optional[datetime] = None,
     ) -> Span:
 
-        encounter_span = encounter_span_registry.get(
-            encounter_id
+        encounter_span = (
+            encounter_span_registry.get(
+                encounter_id
+            )
         )
 
         if encounter_span is None:
@@ -402,9 +290,222 @@ class TraceService:
             )
 
         span.end(
-            end_time=datetime_to_ns(end_time)
+            end_time=datetime_to_ns(
+                end_time
+            )
         )
 
         episode_span_registry.remove(
             episode_id
+        )
+
+    # ========================================================
+    # JOURNAL PARENT RESOLUTION
+    # ========================================================
+
+    def _resolve_journal_parent(
+        self,
+        encounter_id: str,
+        episode_id: Optional[str] = None,
+    ) -> Span:
+
+        # ----------------------------------------------------
+        # Episode-aware Journal
+        # ----------------------------------------------------
+
+        if episode_id is not None:
+
+            episode_span = (
+                episode_span_registry.get(
+                    episode_id
+                )
+            )
+
+            if episode_span is None:
+                raise RuntimeError(
+                    f"No active Episode span found for {episode_id}"
+                )
+
+            return episode_span
+
+        # ----------------------------------------------------
+        # Encounter-level Journal
+        # ----------------------------------------------------
+
+        encounter_span = (
+            encounter_span_registry.get(
+                encounter_id
+            )
+        )
+
+        if encounter_span is None:
+            raise RuntimeError(
+                f"No active Encounter span found for {encounter_id}"
+            )
+
+        return encounter_span
+
+    # ========================================================
+    # JOURNAL EVENT
+    # ========================================================
+
+    def create_journal_event(
+        self,
+        journal_id: str,
+        patient_id: str,
+        encounter_id: str,
+        author_id: str,
+        author_role: str,
+        content: str,
+        timestamp: datetime,
+        episode_id: Optional[str] = None,
+    ) -> None:
+
+        parent_span = (
+            self._resolve_journal_parent(
+                encounter_id=encounter_id,
+                episode_id=episode_id,
+            )
+        )
+
+        parent_span.add_event(
+            name="clinical.journal.event",
+            timestamp=datetime_to_ns(
+                timestamp
+            ),
+            attributes={
+                "clinical.journal.id": journal_id,
+                "clinical.patient.id": patient_id,
+                "clinical.actor.id": author_id,
+                "clinical.actor.role": author_role,
+                "clinical.journal.content": content,
+            },
+        )
+
+        if episode_id is not None:
+            parent_span.set_attribute(
+                "clinical.episode.journal.id",
+                journal_id,
+            )
+
+    # ========================================================
+    # JOURNAL ACTIVITY
+    # ========================================================
+    def start_journal_activity(
+        self,
+        journal_id: str,
+        patient_id: str,
+        encounter_id: str,
+        author_id: str,
+        author_role: str,
+        content: str,
+        start_time: Optional[datetime] = None,
+        episode_id: Optional[str] = None,
+) ->     Span:
+    
+        parent_span = (
+            self._resolve_journal_parent(
+                encounter_id=encounter_id,
+                episode_id=episode_id,
+            )
+        )
+    
+        span = self.start_child_span(
+            name="clinical.journal.activity",
+            parent_span=parent_span,
+            start_time=start_time,
+        )
+    
+        span.set_attribute(
+            "clinical.journal.id",
+            journal_id,
+        )
+    
+        span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+    
+        span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+    
+        span.set_attribute(
+            "clinical.actor.id",
+            author_id,
+        )
+    
+        span.set_attribute(
+            "clinical.actor.role",
+            author_role,
+        )
+    
+        span.set_attribute(
+            "clinical.journal.content",
+            content,
+        )
+    
+        if episode_id is not None:
+            span.set_attribute(
+                "clinical.episode.id",
+                episode_id,
+            )
+    
+        # Keep the live Journal span available until
+        # end_journal_activity() explicitly closes it.
+        journal_span_registry.register(
+            journal_id,
+            span,
+        )
+    
+        return span
+    # ========================================================
+    # END JOURNAL ACTIVITY
+    # ========================================================
+
+    def end_journal_activity(
+        self,
+        journal_id: str,
+        end_time: datetime,
+        end_reason: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
+    ) -> None:
+
+        span = journal_span_registry.get(
+            journal_id
+        )
+
+        if span is None:
+            raise RuntimeError(
+                f"No active Journal span found for {journal_id}"
+            )
+
+        if end_reason is not None:
+            span.set_attribute(
+                "clinical.journal.end_reason",
+                end_reason,
+            )
+
+        if actor_id is not None:
+            span.set_attribute(
+                "clinical.journal.end_actor.id",
+                actor_id,
+            )
+
+        if actor_role is not None:
+            span.set_attribute(
+                "clinical.journal.end_actor.role",
+                actor_role,
+            )
+
+        span.end(
+            end_time=datetime_to_ns(
+                end_time
+            )
+        )
+
+        journal_span_registry.remove(
+            journal_id
         )

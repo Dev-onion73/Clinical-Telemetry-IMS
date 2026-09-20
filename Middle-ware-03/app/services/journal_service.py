@@ -3,30 +3,32 @@ from typing import Any, Optional
 
 from app.persistence.journals import JournalRepository
 from app.services.trace_service import TraceService
-from app.tracing.journal_registry import (
-    journal_span_registry,
-)
+from app.tracing.journal_registry import journal_span_registry
+from app.persistence.episodes import EpisodeRepository
 
 
 class JournalService:
 
     def __init__(
         self,
-        repository: Optional[JournalRepository] = None,
-        trace_service: Optional[TraceService] = None,
+        repository=None,
+        trace_service=None,
+        episode_repository=None,
     ):
         self.repository = (
-            repository
-            or JournalRepository()
+            repository or JournalRepository()
         )
 
         self.trace_service = (
-            trace_service
-            or TraceService()
+            trace_service or TraceService()
+        )
+
+        self.episode_repository = (
+            episode_repository or EpisodeRepository()
         )
 
     # ========================================================
-    # JOURNAL EVENT
+    # EVENT
     # ========================================================
 
     def create_event(
@@ -38,12 +40,10 @@ class JournalService:
         author_role: str,
         content: str,
         timestamp: Optional[datetime] = None,
+        episode_id: Optional[str] = None,
     ) -> dict[str, Any]:
 
-        if not content.strip():
-            raise ValueError(
-                "Journal content is required"
-            )
+        self._validate_content(content)
 
         if timestamp is None:
             timestamp = datetime.now(
@@ -58,18 +58,21 @@ class JournalService:
             author_role=author_role,
             timestamp=timestamp,
             content=content,
+            entry_type="EVENT",
+            episode_id=episode_id,
         )
 
         try:
 
             self.trace_service.create_journal_event(
-                encounter_id=encounter_id,
                 journal_id=journal_id,
                 patient_id=patient_id,
+                encounter_id=encounter_id,
                 author_id=author_id,
                 author_role=author_role,
                 content=content,
                 timestamp=timestamp,
+                episode_id=episode_id,
             )
 
             return journal
@@ -98,16 +101,14 @@ class JournalService:
         end_time: datetime,
         start_reason: Optional[str] = None,
         end_reason: Optional[str] = None,
+        episode_id: Optional[str] = None,
     ) -> dict[str, Any]:
 
-        if not content.strip():
-            raise ValueError(
-                "Journal content is required"
-            )
+        self._validate_content(content)
 
         if end_time < start_time:
             raise ValueError(
-                "end_time cannot precede start_time"
+                "end_time cannot be before start_time"
             )
 
         journal = self.repository.create(
@@ -118,6 +119,8 @@ class JournalService:
             author_role=author_role,
             timestamp=start_time,
             content=content,
+            entry_type="FIXED_ACTIVITY",
+            episode_id=episode_id,
         )
 
         span = None
@@ -125,15 +128,15 @@ class JournalService:
         try:
 
             span = (
-                self.trace_service
-                .start_journal_activity(
-                    encounter_id=encounter_id,
+                self.trace_service.start_journal_activity(
                     journal_id=journal_id,
                     patient_id=patient_id,
+                    encounter_id=encounter_id,
                     author_id=author_id,
                     author_role=author_role,
                     content=content,
                     start_time=start_time,
+                    episode_id=episode_id,
                 )
             )
 
@@ -144,7 +147,7 @@ class JournalService:
                 )
 
             self.trace_service.end_journal_activity(
-                span=span,
+                journal_id=journal_id,
                 end_time=end_time,
                 end_reason=end_reason,
                 actor_id=author_id,
@@ -160,6 +163,10 @@ class JournalService:
                 and span.is_recording()
             ):
                 span.end()
+
+            journal_span_registry.remove(
+                journal_id
+            )
 
             self.repository.delete(
                 journal_id
@@ -179,14 +186,12 @@ class JournalService:
         author_id: str,
         author_role: str,
         content: str,
-        start_reason: Optional[str] = None,
         start_time: Optional[datetime] = None,
+        start_reason: Optional[str] = None,
+        episode_id: Optional[str] = None,
     ) -> dict[str, Any]:
 
-        if not content.strip():
-            raise ValueError(
-                "Journal content is required"
-            )
+        self._validate_content(content)
 
         if start_time is None:
             start_time = datetime.now(
@@ -201,6 +206,8 @@ class JournalService:
             author_role=author_role,
             timestamp=start_time,
             content=content,
+            entry_type="ONGOING_ACTIVITY",
+            episode_id=episode_id,
         )
 
         span = None
@@ -208,15 +215,15 @@ class JournalService:
         try:
 
             span = (
-                self.trace_service
-                .start_journal_activity(
-                    encounter_id=encounter_id,
+                self.trace_service.start_journal_activity(
                     journal_id=journal_id,
                     patient_id=patient_id,
+                    encounter_id=encounter_id,
                     author_id=author_id,
                     author_role=author_role,
                     content=content,
                     start_time=start_time,
+                    episode_id=episode_id,
                 )
             )
 
@@ -241,6 +248,10 @@ class JournalService:
             ):
                 span.end()
 
+            journal_span_registry.remove(
+                journal_id
+            )
+
             self.repository.delete(
                 journal_id
             )
@@ -254,10 +265,10 @@ class JournalService:
     def end_ongoing_activity(
         self,
         journal_id: str,
-        end_reason: Optional[str] = None,
-        ended_by: Optional[str] = None,
-        ended_by_role: Optional[str] = None,
         end_time: Optional[datetime] = None,
+        end_reason: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
     ) -> None:
 
         if end_time is None:
@@ -271,18 +282,77 @@ class JournalService:
 
         if span is None:
             raise RuntimeError(
-                f"No active Journal span found: "
-                f"{journal_id}"
+                f"No active Journal span found for {journal_id}"
             )
 
         self.trace_service.end_journal_activity(
-            span=span,
+            journal_id=journal_id,
             end_time=end_time,
             end_reason=end_reason,
-            actor_id=ended_by,
-            actor_role=ended_by_role,
+            actor_id=actor_id,
+            actor_role=actor_role,
         )
 
         journal_span_registry.remove(
             journal_id
         )
+
+    # ========================================================
+    # VALIDATION
+    # ========================================================
+
+    @staticmethod
+    def _validate_content(
+        content: str,
+    ) -> None:
+
+        if content is None:
+            raise ValueError(
+                "content is required"
+            )
+
+        if not isinstance(content, str):
+            raise ValueError(
+                "content must be a string"
+            )
+
+        if not content.strip():
+            raise ValueError(
+                "content cannot be empty"
+            )
+
+    def _validate_episode_parent(
+        self,
+        episode_id: Optional[str],
+        patient_id: str,
+        encounter_id: str,
+    ) -> None:
+    
+        if episode_id is None:
+            return
+    
+        episode = self.episode_repository.get(
+            episode_id
+        )
+    
+        if episode is None:
+            raise ValueError(
+                f"Episode not found: {episode_id}"
+            )
+    
+        if episode["patient_id"] != patient_id:
+            raise ValueError(
+                f"Episode {episode_id} "
+                f"does not belong to patient {patient_id}"
+            )
+    
+        if episode["encounter_id"] != encounter_id:
+            raise ValueError(
+                f"Episode {episode_id} "
+                f"does not belong to encounter {encounter_id}"
+            )
+    
+        if episode["status"] != "OPEN":
+            raise ValueError(
+                f"Episode {episode_id} is not open"
+            )
