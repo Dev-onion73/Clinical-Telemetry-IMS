@@ -28,11 +28,18 @@ def _request(
         ) from exc
 
     if not response.ok:
+
         try:
-            detail = response.json().get(
-                "detail",
-                response.text,
-            )
+            body = response.json()
+
+            if isinstance(body, dict):
+                detail = body.get(
+                    "detail",
+                    body,
+                )
+            else:
+                detail = body
+
         except Exception:
             detail = response.text
 
@@ -44,7 +51,11 @@ def _request(
     if not response.content:
         return None
 
-    return response.json()
+    try:
+        return response.json()
+
+    except ValueError:
+        return response.text
 
 
 # =========================================================
