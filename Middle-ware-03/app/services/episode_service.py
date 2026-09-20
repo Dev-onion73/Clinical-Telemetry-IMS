@@ -111,7 +111,7 @@ class EpisodeService:
         # -----------------------------------------------------
         # 3. Create originating Journal
         #
-        # At this point episode_id is intentionally NULL.
+        # episode_id is intentionally NULL at this point.
         #
         # This avoids the circular FK dependency:
         #
@@ -163,13 +163,13 @@ class EpisodeService:
             )
 
             # -------------------------------------------------
-            # 6. Start Episode trace span
+            # 6. Start Episode starter span
             #
             # Parent:
-            #     clinical.encounter
+            #     Encounter trace context
             #
             # Child:
-            #     clinical.episode
+            #     clinical.episode.starter
             # -------------------------------------------------
 
             episode_span = self.trace_service.start_episode(
@@ -199,7 +199,20 @@ class EpisodeService:
             )
 
             # -------------------------------------------------
-            # 8. Return fresh persisted Episode
+            # 8. Finish the 10-second Episode starter
+            #
+            # The starter remains registered because its
+            # SpanContext is needed later as the parent of
+            # the actual Episode span.
+            # -------------------------------------------------
+
+            self.trace_service.finish_episode_starter(
+                episode_id=episode_id,
+                start_time=start_time,
+            )
+
+            # -------------------------------------------------
+            # 9. Return fresh persisted Episode
             # -------------------------------------------------
 
             result = self.episode_repository.get(
@@ -292,11 +305,16 @@ class EpisodeService:
         )
 
         # -----------------------------------------------------
-        # End trace span
+        # End actual Episode trace representation
+        #
+        # PostgreSQL remains the lifecycle source of truth.
         # -----------------------------------------------------
 
         self.trace_service.end_episode(
             episode_id=episode_id,
+            patient_id=episode["patient_id"],
+            encounter_id=episode["encounter_id"],
+            start_time=episode["start_time"],
             end_time=end_time,
             closure_by=closure_by,
         )

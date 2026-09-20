@@ -9,7 +9,6 @@ st.set_page_config(
 
 
 st.title("Clinical Operations")
-
 st.caption("Healthcare Incident Management")
 
 
@@ -22,8 +21,14 @@ pg = st.navigation(
                 icon=":material/personal_injury:",
                 default=True,
             ),
+            st.Page(
+                "pages/encounters.py",
+                title="Encounters",
+                icon=":material/meeting_room:",
+            ),
         ],
     }
 )
+
 
 pg.run()
