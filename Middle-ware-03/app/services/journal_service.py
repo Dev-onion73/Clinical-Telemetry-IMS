@@ -50,6 +50,12 @@ class JournalService:
                 timezone.utc
             )
 
+        self._validate_episode_parent(
+            episode_id=episode_id,
+            patient_id=patient_id,
+            encounter_id=encounter_id,
+        )
+
         journal = self.repository.create(
             journal_id=journal_id,
             patient_id=patient_id,
@@ -111,6 +117,12 @@ class JournalService:
                 "end_time cannot be before start_time"
             )
 
+        self._validate_episode_parent(
+            episode_id=episode_id,
+            patient_id=patient_id,
+            encounter_id=encounter_id,
+        )
+
         journal = self.repository.create(
             journal_id=journal_id,
             patient_id=patient_id,
@@ -148,10 +160,14 @@ class JournalService:
 
             self.trace_service.end_journal_activity(
                 journal_id=journal_id,
+                patient_id=patient_id,
+                encounter_id=encounter_id,
+                start_time=start_time,
                 end_time=end_time,
                 end_reason=end_reason,
                 actor_id=author_id,
                 actor_role=author_role,
+                episode_id=episode_id,
             )
 
             return journal
@@ -198,6 +214,12 @@ class JournalService:
                 timezone.utc
             )
 
+        self._validate_episode_parent(
+            episode_id=episode_id,
+            patient_id=patient_id,
+            encounter_id=encounter_id,
+        )
+
         journal = self.repository.create(
             journal_id=journal_id,
             patient_id=patient_id,
@@ -210,11 +232,15 @@ class JournalService:
             episode_id=episode_id,
         )
 
-        span = None
+        starter_span = None
 
         try:
 
-            span = (
+            # ------------------------------------------------
+            # Create the 10-second Journal Activity starter.
+            # ------------------------------------------------
+
+            starter_span = (
                 self.trace_service.start_journal_activity(
                     journal_id=journal_id,
                     patient_id=patient_id,
@@ -228,14 +254,22 @@ class JournalService:
             )
 
             if start_reason is not None:
-                span.set_attribute(
+                starter_span.set_attribute(
                     "clinical.journal.start_reason",
                     start_reason,
                 )
 
-            journal_span_registry.register(
-                journal_id,
-                span,
+            # ------------------------------------------------
+            # Finish the starter immediately.
+            #
+            # The registry retains it because its SpanContext
+            # is needed later as the parent of the actual
+            # Journal Activity span.
+            # ------------------------------------------------
+
+            self.trace_service.finish_journal_activity_starter(
+                journal_id=journal_id,
+                start_time=start_time,
             )
 
             return journal
@@ -243,10 +277,10 @@ class JournalService:
         except Exception:
 
             if (
-                span is not None
-                and span.is_recording()
+                starter_span is not None
+                and starter_span.is_recording()
             ):
-                span.end()
+                starter_span.end()
 
             journal_span_registry.remove(
                 journal_id
@@ -276,24 +310,62 @@ class JournalService:
                 timezone.utc
             )
 
+        journal = self.repository.get(
+            journal_id
+        )
+
+        if journal is None:
+            raise ValueError(
+                f"Journal not found: {journal_id}"
+            )
+
+        if journal["entry_type"] != "ONGOING_ACTIVITY":
+            raise ValueError(
+                f"Journal is not an ongoing activity: "
+                f"{journal_id}"
+            )
+
+        if end_time < journal["timestamp"]:
+            raise ValueError(
+                "end_time cannot be before start_time"
+            )
+
         span = journal_span_registry.get(
             journal_id
         )
 
         if span is None:
             raise RuntimeError(
-                f"No active Journal span found for {journal_id}"
+                f"No active Journal span found "
+                f"for {journal_id}"
             )
 
         self.trace_service.end_journal_activity(
             journal_id=journal_id,
+            patient_id=journal["patient_id"],
+            encounter_id=journal["encounter_id"],
+            start_time=journal["timestamp"],
             end_time=end_time,
             end_reason=end_reason,
             actor_id=actor_id,
             actor_role=actor_role,
+            episode_id=journal.get("episode_id"),
         )
 
         journal_span_registry.remove(
+            journal_id
+        )
+
+    # ========================================================
+    # GET JOURNAL
+    # ========================================================
+
+    def get(
+        self,
+        journal_id: str,
+    ) -> Optional[dict[str, Any]]:
+
+        return self.repository.get(
             journal_id
         )
 
@@ -327,31 +399,31 @@ class JournalService:
         patient_id: str,
         encounter_id: str,
     ) -> None:
-    
+
         if episode_id is None:
             return
-    
+
         episode = self.episode_repository.get(
             episode_id
         )
-    
+
         if episode is None:
             raise ValueError(
                 f"Episode not found: {episode_id}"
             )
-    
+
         if episode["patient_id"] != patient_id:
             raise ValueError(
                 f"Episode {episode_id} "
                 f"does not belong to patient {patient_id}"
             )
-    
+
         if episode["encounter_id"] != encounter_id:
             raise ValueError(
                 f"Episode {episode_id} "
                 f"does not belong to encounter {encounter_id}"
             )
-    
+
         if episode["status"] != "OPEN":
             raise ValueError(
                 f"Episode {episode_id} is not open"

@@ -4,41 +4,20 @@ from typing import Optional
 from opentelemetry import trace
 from opentelemetry.trace import Span
 
-from app.tracing.context import context_from_ids
-from app.tracing.provider import get_tracer
 from app.tracing.registry import encounter_span_registry
-from app.tracing.journal_registry import journal_span_registry
 from app.tracing.episode_registry import episode_span_registry
+from app.tracing.journal_registry import journal_span_registry
 
 
 def datetime_to_ns(
-    value: Optional[datetime],
-) -> Optional[int]:
-
-    if value is None:
-        return None
-
-    if value.tzinfo is None:
-        value = value.replace(
-            tzinfo=timezone.utc
-        )
-
+    value: datetime,
+) -> int:
     return int(
         value.timestamp() * 1_000_000_000
     )
 
 
 def force_trace_flush() -> None:
-    """
-    Force the configured OpenTelemetry SDK provider to flush
-    completed spans to its configured span processors/exporters.
-
-    This is important for the short Encounter Starter Span:
-    the starter is deliberately ended immediately, so without
-    a flush it may remain in the BatchSpanProcessor queue until
-    its normal export interval.
-    """
-
     provider = trace.get_tracer_provider()
 
     force_flush = getattr(
@@ -53,8 +32,47 @@ def force_trace_flush() -> None:
 
 class TraceService:
 
-    def __init__(self):
-        self.tracer = get_tracer()
+    def __init__(
+        self,
+        tracer=None,
+    ):
+        self.tracer = (
+            tracer
+            or trace.get_tracer(
+                "clinical-middleware"
+            )
+        )
+
+    # ========================================================
+    # GENERIC CHILD SPAN
+    # ========================================================
+
+    def start_child_span(
+        self,
+        name: str,
+        parent_span: Span,
+        start_time: Optional[datetime] = None,
+    ) -> Span:
+
+        parent_context = (
+            trace.set_span_in_context(
+                parent_span
+            )
+        )
+
+        if start_time is None:
+            return self.tracer.start_span(
+                name=name,
+                context=parent_context,
+            )
+
+        return self.tracer.start_span(
+            name=name,
+            context=parent_context,
+            start_time=datetime_to_ns(
+                start_time
+            ),
+        )
 
     # ========================================================
     # ENCOUNTER
@@ -65,109 +83,141 @@ class TraceService:
         encounter_id: str,
         patient_id: str,
         encounter_type: str,
-        start_reason: str,
-        actor_id: str,
-        actor_role: str,
+        actor_id: Optional[str] = None,
+        actor_role: Optional[str] = None,
+        start_reason: Optional[str] = None,
         start_details: Optional[str] = None,
         start_time: Optional[datetime] = None,
+        started_by: Optional[str] = None,
+        started_by_role: Optional[str] = None,
     ) -> Span:
 
         if start_time is None:
-            start_time = datetime.now(timezone.utc)
+            start_time = datetime.now(
+                timezone.utc
+            )
 
         # ----------------------------------------------------
-        # Create the Encounter Starter Span.
-        #
-        # This is a short-lived representation of the
-        # Encounter initialization.
-        #
-        # It is NOT the actual Encounter duration.
+        # Backward-compatible aliases
         # ----------------------------------------------------
 
-        span = self.tracer.start_span(
+        if actor_id is None:
+            actor_id = started_by
+
+        if actor_role is None:
+            actor_role = started_by_role
+
+        if start_reason is None:
+            start_reason = start_details
+
+        # ----------------------------------------------------
+        # Starter span
+        # ----------------------------------------------------
+
+        encounter_span = self.tracer.start_span(
             name="clinical.encounter.starter",
             start_time=datetime_to_ns(
                 start_time
             ),
         )
 
-        span.set_attribute(
+        encounter_span.set_attribute(
             "clinical.encounter.id",
             encounter_id,
         )
 
-        span.set_attribute(
+        encounter_span.set_attribute(
             "clinical.patient.id",
             patient_id,
         )
 
-        span.set_attribute(
+        encounter_span.set_attribute(
             "clinical.encounter.type",
             encounter_type,
         )
 
-        span.set_attribute(
-            "clinical.encounter.start_reason",
-            start_reason,
-        )
+        if actor_id is not None:
+            encounter_span.set_attribute(
+                "clinical.encounter.actor_id",
+                actor_id,
+            )
 
-        span.set_attribute(
-            "clinical.actor.id",
-            actor_id,
-        )
+        if actor_role is not None:
+            encounter_span.set_attribute(
+                "clinical.encounter.actor_role",
+                actor_role,
+            )
 
-        span.set_attribute(
-            "clinical.actor.role",
-            actor_role,
-        )
-
-        span.set_attribute(
-            "clinical.encounter.representation",
-            "starter",
-        )
-
-        span.set_attribute(
-            "clinical.encounter.logical_start_time",
-            start_time.isoformat(),
-        )
+        if start_reason is not None:
+            encounter_span.set_attribute(
+                "clinical.encounter.start_reason",
+                start_reason,
+            )
 
         if start_details is not None:
-            span.set_attribute(
+            encounter_span.set_attribute(
                 "clinical.encounter.start_details",
                 start_details,
             )
 
+        encounter_span.set_attribute(
+            "clinical.encounter.actual",
+            False,
+        )
+
+        encounter_span.set_attribute(
+            "clinical.encounter.representation",
+            "starter",
+        )
+
+        encounter_span.set_attribute(
+            "clinical.encounter.logical_start_time",
+            start_time.isoformat(),
+        )
+
         # ----------------------------------------------------
-        # Exact logical start event.
+        # Started event
         # ----------------------------------------------------
 
-        span.add_event(
+        event_attributes = {
+            "clinical.encounter.id": encounter_id,
+            "clinical.patient.id": patient_id,
+        }
+
+        if actor_id is not None:
+            event_attributes[
+                "clinical.actor.id"
+            ] = actor_id
+
+        if actor_role is not None:
+            event_attributes[
+                "clinical.actor.role"
+            ] = actor_role
+
+        if start_reason is not None:
+            event_attributes[
+                "clinical.encounter.start_reason"
+            ] = start_reason
+
+        if start_details is not None:
+            event_attributes[
+                "clinical.encounter.start_details"
+            ] = start_details
+
+        encounter_span.add_event(
             name="clinical.encounter.started",
             timestamp=datetime_to_ns(
                 start_time
             ),
-            attributes={
-                "clinical.encounter.id": encounter_id,
-                "clinical.patient.id": patient_id,
-                "clinical.actor.id": actor_id,
-                "clinical.actor.role": actor_role,
-            },
+            attributes=event_attributes,
         )
-
-        # ----------------------------------------------------
-        # Register BEFORE finishing the starter.
-        #
-        # The registry intentionally retains this Span object
-        # after it has ended because its SpanContext provides
-        # the Encounter's trace lineage.
-        # ----------------------------------------------------
 
         encounter_span_registry.register(
             encounter_id,
-            span,
+            encounter_span,
         )
 
-        return span
+        return encounter_span
 
     def finish_encounter_starter(
         self,
@@ -175,95 +225,85 @@ class TraceService:
         start_time: datetime,
     ) -> None:
 
-        starter_span = encounter_span_registry.get(
-            encounter_id
+        encounter_span = (
+            encounter_span_registry.get(
+                encounter_id
+            )
         )
 
-        if starter_span is None:
+        if encounter_span is None:
             raise RuntimeError(
                 f"No Encounter starter span found "
                 f"for {encounter_id}"
             )
-
-        # ----------------------------------------------------
-        # The starter is represented as exactly 10 seconds.
-        #
-        # We deliberately do NOT sleep for ten seconds.
-        # Instead, we provide the historical end timestamp.
-        # ----------------------------------------------------
 
         starter_end_time = (
             start_time
             + timedelta(seconds=10)
         )
 
-        starter_span.end(
+        encounter_span.end(
             end_time=datetime_to_ns(
                 starter_end_time
             )
         )
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        #
-        # BatchSpanProcessor normally exports asynchronously.
-        # Force a flush here so the Starter Span is visible
-        # independently of Encounter closure.
-        # ----------------------------------------------------
-
         force_trace_flush()
-
-        # ----------------------------------------------------
-        # DO NOT remove the starter from the registry.
-        #
-        # Its SpanContext remains the parent context for:
-        #
-        #   - Episodes
-        #   - Encounter-level Journal Events
-        #   - Encounter-level Journal Activities
-        #
-        # Even though the starter itself has already ended.
-        # ----------------------------------------------------
 
     def end_encounter(
         self,
         encounter_id: str,
+        patient_id: str,
+        encounter_type: str,
         start_time: datetime,
         end_time: datetime,
+        closure_by: Optional[str] = None,
         end_reason: Optional[str] = None,
-        actor_id: Optional[str] = None,
-        actor_role: Optional[str] = None,
         end_details: Optional[str] = None,
     ) -> None:
 
-        starter_span = encounter_span_registry.get(
-            encounter_id
+        encounter_starter = (
+            encounter_span_registry.get(
+                encounter_id
+            )
         )
 
-        if starter_span is None:
+        if encounter_starter is None:
             raise RuntimeError(
                 f"No Encounter trace context found "
                 f"for {encounter_id}"
             )
 
+        if end_time < start_time:
+            raise ValueError(
+                f"end_time cannot be earlier than "
+                f"start_time for Encounter "
+                f"{encounter_id}"
+            )
+
         # ----------------------------------------------------
-        # Create the Actual Encounter Span.
-        #
-        # This Span is created at closure time, but receives
-        # the original Encounter start timestamp.
-        #
-        # Its parent is the already-ended Starter Span.
+        # Actual historical span
         # ----------------------------------------------------
 
         actual_span = self.start_child_span(
             name="clinical.encounter",
-            parent_span=starter_span,
+            parent_span=encounter_starter,
             start_time=start_time,
         )
 
         actual_span.set_attribute(
             "clinical.encounter.id",
             encounter_id,
+        )
+
+        actual_span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+        actual_span.set_attribute(
+            "clinical.encounter.type",
+            encounter_type,
         )
 
         actual_span.set_attribute(
@@ -286,22 +326,16 @@ class TraceService:
             end_time.isoformat(),
         )
 
+        if closure_by is not None:
+            actual_span.set_attribute(
+                "clinical.encounter.closure_by",
+                closure_by,
+            )
+
         if end_reason is not None:
             actual_span.set_attribute(
                 "clinical.encounter.end_reason",
                 end_reason,
-            )
-
-        if actor_id is not None:
-            actual_span.set_attribute(
-                "clinical.encounter.end_actor.id",
-                actor_id,
-            )
-
-        if actor_role is not None:
-            actual_span.set_attribute(
-                "clinical.encounter.end_actor.role",
-                actor_role,
             )
 
         if end_details is not None:
@@ -311,21 +345,39 @@ class TraceService:
             )
 
         # ----------------------------------------------------
-        # Exact logical end event.
+        # End event
         # ----------------------------------------------------
+
+        event_attributes = {
+            "clinical.encounter.id": encounter_id,
+            "clinical.patient.id": patient_id,
+        }
+
+        if closure_by is not None:
+            event_attributes[
+                "clinical.actor.id"
+            ] = closure_by
+
+        if end_reason is not None:
+            event_attributes[
+                "clinical.encounter.end_reason"
+            ] = end_reason
+
+        if end_details is not None:
+            event_attributes[
+                "clinical.encounter.end_details"
+            ] = end_details
 
         actual_span.add_event(
             name="clinical.encounter.ended",
             timestamp=datetime_to_ns(
                 end_time
             ),
-            attributes={
-                "clinical.encounter.id": encounter_id,
-            },
+            attributes=event_attributes,
         )
 
         # ----------------------------------------------------
-        # Complete the historical Actual Encounter Span.
+        # End + flush + remove lifecycle context
         # ----------------------------------------------------
 
         actual_span.end(
@@ -334,67 +386,13 @@ class TraceService:
             )
         )
 
-        # ----------------------------------------------------
-        # Force immediate export of the Actual Encounter Span.
-        # ----------------------------------------------------
-
         force_trace_flush()
-
-        # ----------------------------------------------------
-        # Encounter is now completely finished.
-        # ----------------------------------------------------
 
         encounter_span_registry.remove(
             encounter_id
         )
 
     # ========================================================
-    # GENERIC CHILD SPAN
-    # ========================================================
-
-    def start_child_span(
-        self,
-        name: str,
-        parent_span: Span,
-        start_time: Optional[datetime] = None,
-    ) -> Span:
-
-        parent_context = (
-            trace.set_span_in_context(
-                parent_span
-            )
-        )
-
-        return self.tracer.start_span(
-            name=name,
-            context=parent_context,
-            start_time=datetime_to_ns(
-                start_time
-            ),
-        )
-
-    def start_child_span_from_context(
-        self,
-        name: str,
-        parent_trace_id: str,
-        parent_span_id: str,
-        start_time: Optional[datetime] = None,
-    ) -> Span:
-
-        parent_context = context_from_ids(
-            parent_trace_id,
-            parent_span_id,
-        )
-
-        return self.tracer.start_span(
-            name=name,
-            context=parent_context,
-            start_time=datetime_to_ns(
-                start_time
-            ),
-        )
-
-     # ========================================================
     # EPISODE
     # ========================================================
 
@@ -410,10 +408,14 @@ class TraceService:
     ) -> Span:
 
         if start_time is None:
-            start_time = datetime.now(timezone.utc)
+            start_time = datetime.now(
+                timezone.utc
+            )
 
-        encounter_span = encounter_span_registry.get(
-            encounter_id
+        encounter_span = (
+            encounter_span_registry.get(
+                encounter_id
+            )
         )
 
         if encounter_span is None:
@@ -470,7 +472,9 @@ class TraceService:
 
         episode_span.add_event(
             name="clinical.episode.started",
-            timestamp=datetime_to_ns(start_time),
+            timestamp=datetime_to_ns(
+                start_time
+            ),
             attributes={
                 "clinical.episode.id": episode_id,
                 "clinical.patient.id": patient_id,
@@ -492,8 +496,10 @@ class TraceService:
         start_time: datetime,
     ) -> None:
 
-        episode_span = episode_span_registry.get(
-            episode_id
+        episode_span = (
+            episode_span_registry.get(
+                episode_id
+            )
         )
 
         if episode_span is None:
@@ -503,7 +509,8 @@ class TraceService:
             )
 
         starter_end_time = (
-            start_time + timedelta(seconds=10)
+            start_time
+            + timedelta(seconds=10)
         )
 
         episode_span.end(
@@ -524,14 +531,23 @@ class TraceService:
         closure_by: Optional[str] = None,
     ) -> None:
 
-        episode_starter = episode_span_registry.get(
-            episode_id
+        episode_starter = (
+            episode_span_registry.get(
+                episode_id
+            )
         )
 
         if episode_starter is None:
             raise RuntimeError(
                 f"No Episode trace context found "
                 f"for {episode_id}"
+            )
+
+        if end_time < start_time:
+            raise ValueError(
+                f"end_time cannot be earlier than "
+                f"start_time for Episode "
+                f"{episode_id}"
             )
 
         actual_span = self.start_child_span(
@@ -581,19 +597,21 @@ class TraceService:
                 closure_by,
             )
 
-        end_attributes = {
+        event_attributes = {
             "clinical.episode.id": episode_id,
         }
 
         if closure_by is not None:
-            end_attributes[
+            event_attributes[
                 "clinical.actor.id"
             ] = closure_by
 
         actual_span.add_event(
             name="clinical.episode.ended",
-            timestamp=datetime_to_ns(end_time),
-            attributes=end_attributes,
+            timestamp=datetime_to_ns(
+                end_time
+            ),
+            attributes=event_attributes,
         )
 
         actual_span.end(
@@ -607,53 +625,6 @@ class TraceService:
         episode_span_registry.remove(
             episode_id
         )
-    # ========================================================
-    # JOURNAL PARENT RESOLUTION
-    # ========================================================
-
-    def _resolve_journal_parent(
-        self,
-        encounter_id: str,
-        episode_id: Optional[str] = None,
-    ) -> Span:
-
-        # ----------------------------------------------------
-        # Episode-aware Journal
-        # ----------------------------------------------------
-
-        if episode_id is not None:
-
-            episode_span = (
-                episode_span_registry.get(
-                    episode_id
-                )
-            )
-
-            if episode_span is None:
-                raise RuntimeError(
-                    f"No active Episode span found "
-                    f"for {episode_id}"
-                )
-
-            return episode_span
-
-        # ----------------------------------------------------
-        # Encounter-level Journal
-        # ----------------------------------------------------
-
-        encounter_span = (
-            encounter_span_registry.get(
-                encounter_id
-            )
-        )
-
-        if encounter_span is None:
-            raise RuntimeError(
-                f"No active Encounter span found "
-                f"for {encounter_id}"
-            )
-
-        return encounter_span
 
     # ========================================================
     # JOURNAL EVENT
@@ -669,37 +640,101 @@ class TraceService:
         content: str,
         timestamp: datetime,
         episode_id: Optional[str] = None,
-    ) -> None:
+    ) -> Span:
 
-        parent_span = (
-            self._resolve_journal_parent(
-                encounter_id=encounter_id,
-                episode_id=episode_id,
+        parent_span = None
+
+        if episode_id is not None:
+            parent_span = (
+                episode_span_registry.get(
+                    episode_id
+                )
             )
+
+            if parent_span is None:
+                raise RuntimeError(
+                    f"No Episode trace context found "
+                    f"for {episode_id}"
+                )
+
+        if parent_span is None:
+            parent_span = (
+                encounter_span_registry.get(
+                    encounter_id
+                )
+            )
+
+        if parent_span is None:
+            raise RuntimeError(
+                f"No Encounter trace context found "
+                f"for {encounter_id}"
+            )
+
+        journal_span = self.start_child_span(
+            name="clinical.journal.event",
+            parent_span=parent_span,
+            start_time=timestamp,
         )
 
-        parent_span.add_event(
+        journal_span.set_attribute(
+            "clinical.journal.id",
+            journal_id,
+        )
+
+        journal_span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+        journal_span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+
+        journal_span.set_attribute(
+            "clinical.journal.author_id",
+            author_id,
+        )
+
+        journal_span.set_attribute(
+            "clinical.journal.author_role",
+            author_role,
+        )
+
+        journal_span.set_attribute(
+            "clinical.journal.entry_type",
+            "EVENT",
+        )
+
+        if episode_id is not None:
+            journal_span.set_attribute(
+                "clinical.episode.id",
+                episode_id,
+            )
+
+        journal_span.add_event(
             name="clinical.journal.event",
             timestamp=datetime_to_ns(
                 timestamp
             ),
             attributes={
                 "clinical.journal.id": journal_id,
-                "clinical.patient.id": patient_id,
-                "clinical.actor.id": author_id,
-                "clinical.actor.role": author_role,
                 "clinical.journal.content": content,
             },
         )
 
-        if episode_id is not None:
-            parent_span.set_attribute(
-                "clinical.episode.journal.id",
-                journal_id,
+        journal_span.end(
+            end_time=datetime_to_ns(
+                timestamp
             )
+        )
+
+        force_trace_flush()
+
+        return journal_span
 
     # ========================================================
-    # JOURNAL ACTIVITY
+    # JOURNAL ACTIVITY STARTER
     # ========================================================
 
     def start_journal_activity(
@@ -710,67 +745,144 @@ class TraceService:
         author_id: str,
         author_role: str,
         content: str,
-        start_time: Optional[datetime] = None,
+        start_time: datetime,
         episode_id: Optional[str] = None,
     ) -> Span:
 
-        parent_span = (
-            self._resolve_journal_parent(
-                encounter_id=encounter_id,
-                episode_id=episode_id,
-            )
-        )
+        parent_span = None
 
-        span = self.start_child_span(
-            name="clinical.journal.activity",
+        if episode_id is not None:
+            parent_span = (
+                episode_span_registry.get(
+                    episode_id
+                )
+            )
+
+            if parent_span is None:
+                raise RuntimeError(
+                    f"No Episode trace context found "
+                    f"for {episode_id}"
+                )
+
+        if parent_span is None:
+            parent_span = (
+                encounter_span_registry.get(
+                    encounter_id
+                )
+            )
+
+        if parent_span is None:
+            raise RuntimeError(
+                f"No Encounter trace context found "
+                f"for {encounter_id}"
+            )
+
+        journal_span = self.start_child_span(
+            name="clinical.journal.activity.starter",
             parent_span=parent_span,
             start_time=start_time,
         )
 
-        span.set_attribute(
+        journal_span.set_attribute(
             "clinical.journal.id",
             journal_id,
         )
 
-        span.set_attribute(
+        journal_span.set_attribute(
             "clinical.patient.id",
             patient_id,
         )
 
-        span.set_attribute(
+        journal_span.set_attribute(
             "clinical.encounter.id",
             encounter_id,
         )
 
-        span.set_attribute(
-            "clinical.actor.id",
+        journal_span.set_attribute(
+            "clinical.journal.author_id",
             author_id,
         )
 
-        span.set_attribute(
-            "clinical.actor.role",
+        journal_span.set_attribute(
+            "clinical.journal.author_role",
             author_role,
         )
 
-        span.set_attribute(
-            "clinical.journal.content",
-            content,
+        journal_span.set_attribute(
+            "clinical.journal.entry_type",
+            "ACTIVITY",
+        )
+
+        journal_span.set_attribute(
+            "clinical.journal.representation",
+            "starter",
+        )
+
+        journal_span.set_attribute(
+            "clinical.journal.logical_start_time",
+            start_time.isoformat(),
         )
 
         if episode_id is not None:
-            span.set_attribute(
+            journal_span.set_attribute(
                 "clinical.episode.id",
                 episode_id,
             )
 
-        # Keep the live Journal span available until
-        # end_journal_activity() explicitly closes it.
-        journal_span_registry.register(
-            journal_id,
-            span,
+        journal_span.add_event(
+            name="clinical.journal.activity.started",
+            timestamp=datetime_to_ns(
+                start_time
+            ),
+            attributes={
+                "clinical.journal.id": journal_id,
+                "clinical.patient.id": patient_id,
+                "clinical.encounter.id": encounter_id,
+                "clinical.journal.author_id": author_id,
+            },
         )
 
-        return span
+        journal_span_registry.register(
+            journal_id,
+            journal_span,
+        )
+
+        return journal_span
+
+    # ========================================================
+    # FINISH JOURNAL ACTIVITY STARTER
+    # ========================================================
+
+    def finish_journal_activity_starter(
+        self,
+        journal_id: str,
+        start_time: datetime,
+    ) -> None:
+
+        journal_span = (
+            journal_span_registry.get(
+                journal_id
+            )
+        )
+
+        if journal_span is None:
+            raise RuntimeError(
+                f"No Journal Activity starter span "
+                f"found for {journal_id}"
+            )
+
+        starter_end_time = (
+            start_time
+            + timedelta(seconds=10)
+        )
+
+        journal_span.end(
+            end_time=datetime_to_ns(
+                starter_end_time
+            )
+        )
+
+        force_trace_flush()
 
     # ========================================================
     # END JOURNAL ACTIVITY
@@ -779,45 +891,198 @@ class TraceService:
     def end_journal_activity(
         self,
         journal_id: str,
-        end_time: datetime,
+        patient_id: Optional[str] = None,
+        encounter_id: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
         end_reason: Optional[str] = None,
         actor_id: Optional[str] = None,
         actor_role: Optional[str] = None,
+        episode_id: Optional[str] = None,
+        closure_by: Optional[str] = None,
+        closure_by_role: Optional[str] = None,
     ) -> None:
 
-        span = journal_span_registry.get(
-            journal_id
+        journal_starter = (
+            journal_span_registry.get(
+                journal_id
+            )
         )
 
-        if span is None:
+        if journal_starter is None:
             raise RuntimeError(
-                f"No active Journal span found "
-                f"for {journal_id}"
+                f"No Journal Activity trace context "
+                f"found for {journal_id}"
+            )
+
+        # ----------------------------------------------------
+        # Backward-compatible closure aliases
+        # ----------------------------------------------------
+
+        if actor_id is None:
+            actor_id = closure_by
+
+        if actor_role is None:
+            actor_role = closure_by_role
+
+        # ----------------------------------------------------
+        # Required lifecycle information
+        # ----------------------------------------------------
+
+        if patient_id is None:
+            raise ValueError(
+                f"patient_id is required to end "
+                f"Journal Activity {journal_id}"
+            )
+
+        if encounter_id is None:
+            raise ValueError(
+                f"encounter_id is required to end "
+                f"Journal Activity {journal_id}"
+            )
+
+        if start_time is None:
+            raise ValueError(
+                f"start_time is required to end "
+                f"Journal Activity {journal_id}"
+            )
+
+        if end_time is None:
+            raise ValueError(
+                f"end_time is required to end "
+                f"Journal Activity {journal_id}"
+            )
+
+        if end_time < start_time:
+            raise ValueError(
+                f"end_time cannot be earlier than "
+                f"start_time for Journal Activity "
+                f"{journal_id}"
+            )
+
+        # ----------------------------------------------------
+        # Actual historical span
+        # ----------------------------------------------------
+
+        actual_span = self.start_child_span(
+            name="clinical.journal.activity",
+            parent_span=journal_starter,
+            start_time=start_time,
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.id",
+            journal_id,
+        )
+
+        actual_span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+        actual_span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.entry_type",
+            "ACTIVITY",
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.actual",
+            True,
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.representation",
+            "actual",
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.logical_start_time",
+            start_time.isoformat(),
+        )
+
+        actual_span.set_attribute(
+            "clinical.journal.logical_end_time",
+            end_time.isoformat(),
+        )
+
+        if episode_id is not None:
+            actual_span.set_attribute(
+                "clinical.episode.id",
+                episode_id,
             )
 
         if end_reason is not None:
-            span.set_attribute(
+            actual_span.set_attribute(
                 "clinical.journal.end_reason",
                 end_reason,
             )
 
         if actor_id is not None:
-            span.set_attribute(
-                "clinical.journal.end_actor.id",
+            actual_span.set_attribute(
+                "clinical.journal.closure_actor_id",
                 actor_id,
             )
 
         if actor_role is not None:
-            span.set_attribute(
-                "clinical.journal.end_actor.role",
+            actual_span.set_attribute(
+                "clinical.journal.closure_actor_role",
                 actor_role,
             )
 
-        span.end(
+        # ----------------------------------------------------
+        # End event
+        # ----------------------------------------------------
+
+        event_attributes = {
+            "clinical.journal.id": journal_id,
+            "clinical.patient.id": patient_id,
+            "clinical.encounter.id": encounter_id,
+        }
+
+        if actor_id is not None:
+            event_attributes[
+                "clinical.actor.id"
+            ] = actor_id
+
+        if actor_role is not None:
+            event_attributes[
+                "clinical.actor.role"
+            ] = actor_role
+
+        if end_reason is not None:
+            event_attributes[
+                "clinical.journal.end_reason"
+            ] = end_reason
+
+        if episode_id is not None:
+            event_attributes[
+                "clinical.episode.id"
+            ] = episode_id
+
+        actual_span.add_event(
+            name="clinical.journal.activity.ended",
+            timestamp=datetime_to_ns(
+                end_time
+            ),
+            attributes=event_attributes,
+        )
+
+        # ----------------------------------------------------
+        # End + flush + remove lifecycle context
+        # ----------------------------------------------------
+
+        actual_span.end(
             end_time=datetime_to_ns(
                 end_time
             )
         )
+
+        force_trace_flush()
 
         journal_span_registry.remove(
             journal_id
