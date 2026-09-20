@@ -1,7 +1,7 @@
 import requests
 
 
-MIDDLEWARE_URL = "http://YOUR_MIDDLEWARE_IP:8000"
+MIDDLEWARE_URL = "http://localhost:8000"
 
 
 def register_patient(payload: dict):
