@@ -18,6 +18,13 @@ class StableVitalsStartRequest(BaseModel):
     )
 
 
+class VitalReading(BaseModel):
+    source_id: str
+    patient_id: str
+    timestamp: datetime
+    metrics: dict[str, float]
+
+
 class StableVitalsSource(BaseModel):
     source_id: str
     patient_id: str
@@ -29,3 +36,5 @@ class StableVitalsSource(BaseModel):
     metrics: dict[str, float]
 
     interval_seconds: float
+
+    last_reading: VitalReading | None = None

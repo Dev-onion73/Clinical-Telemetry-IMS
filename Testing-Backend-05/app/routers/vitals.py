@@ -4,7 +4,7 @@ from app.schemas.vitals import (
     StableVitalsSource,
     StableVitalsStartRequest,
 )
-from app.services.stable_vitals import StableVitalsService
+from app.state import stable_vitals_service
 
 
 router = APIRouter(
@@ -13,32 +13,36 @@ router = APIRouter(
 )
 
 
-stable_vitals_service = StableVitalsService()
-
-
 @router.post(
     "/stable/start",
     response_model=StableVitalsSource,
 )
-def start_stable_vitals(
+async def start_stable_vitals(
     request: StableVitalsStartRequest,
 ):
-    return stable_vitals_service.start_source(request)
+    return await stable_vitals_service.start_source(
+        request
+    )
 
 
 @router.post(
     "/stable/{source_id}/stop",
     response_model=StableVitalsSource,
 )
-def stop_stable_vitals(
+async def stop_stable_vitals(
     source_id: str,
 ):
-    source = stable_vitals_service.stop_source(source_id)
+    source = await stable_vitals_service.stop_source(
+        source_id
+    )
 
     if source is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Stable vitals source '{source_id}' not found.",
+            detail=(
+                f"Stable vitals source "
+                f"'{source_id}' not found."
+            ),
         )
 
     return source
@@ -59,12 +63,17 @@ def list_stable_vitals():
 def get_stable_vitals(
     source_id: str,
 ):
-    source = stable_vitals_service.get_source(source_id)
+    source = stable_vitals_service.get_source(
+        source_id
+    )
 
     if source is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Stable vitals source '{source_id}' not found.",
+            detail=(
+                f"Stable vitals source "
+                f"'{source_id}' not found."
+            ),
         )
 
     return source

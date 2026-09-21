@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8010
 
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_vitals_topic: str = "clinical.vitals"
+
     model_config = SettingsConfigDict(
         env_prefix="TESTING_BACKEND_",
         env_file=".env",
