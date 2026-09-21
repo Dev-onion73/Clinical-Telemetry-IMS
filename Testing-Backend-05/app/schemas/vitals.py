@@ -5,12 +5,12 @@ from pydantic import BaseModel, Field
 
 class StableVitalsStartRequest(BaseModel):
     patient_id: str = Field(min_length=1)
+    encounter_id: str = Field(min_length=1)
+    device_id: str = Field(min_length=1)
 
     start_time: datetime
 
-    metrics: dict[str, float] = Field(
-        min_length=1,
-    )
+    metrics: dict[str, float] = Field(min_length=1)
 
     interval_seconds: float = Field(
         default=1.0,
@@ -21,16 +21,21 @@ class StableVitalsStartRequest(BaseModel):
 class VitalReading(BaseModel):
     source_id: str
     patient_id: str
+    encounter_id: str
+    device_id: str
+
     timestamp: datetime
+
     metrics: dict[str, float]
 
 
 class StableVitalsSource(BaseModel):
     source_id: str
     patient_id: str
+    encounter_id: str
+    device_id: str
 
     status: str
-
     started_at: datetime
 
     metrics: dict[str, float]
