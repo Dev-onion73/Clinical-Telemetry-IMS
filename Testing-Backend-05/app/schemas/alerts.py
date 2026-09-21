@@ -5,6 +5,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.schemas.vitals import VitalReading
+
 
 class ScenarioType(str, Enum):
     SEED = "seed"
@@ -13,10 +15,14 @@ class ScenarioType(str, Enum):
 
 
 # ============================================================================
-# Stable vitals
+# One-shot alert injection
 # ============================================================================
 
-class StableVitalsStartRequest(BaseModel):
+class AlertInjectionRequest(BaseModel):
+    scenario: str = Field(
+        min_length=1,
+    )
+
     patient_id: str = Field(
         min_length=1,
     )
@@ -29,57 +35,32 @@ class StableVitalsStartRequest(BaseModel):
         min_length=1,
     )
 
-    start_time: datetime
-
-    metrics: dict[str, float] = Field(
-        min_length=1,
-    )
-
-    interval_seconds: float = Field(
-        default=1.0,
-        gt=0,
-    )
+    # Timestamp written onto the generated VitalReading.
+    #
+    # The API call itself is executed immediately.
+    spoof_timestamp: datetime | None = None
 
 
-class VitalReading(BaseModel):
+class AlertInjectionResponse(BaseModel):
+    injection_id: str
+
     source_id: str
 
-    patient_id: str
+    scenario: str
 
-    encounter_id: str
-
-    device_id: str
-
-    timestamp: datetime
-
-    metrics: dict[str, float]
-
-
-class StableVitalsSource(BaseModel):
-    source_id: str
-
-    patient_id: str
-
-    encounter_id: str
-
-    device_id: str
+    scenario_type: str
 
     status: str
 
-    started_at: datetime
+    spoof_timestamp: datetime
 
-    metrics: dict[str, float]
+    injected_at: datetime
 
-    interval_seconds: float
-
-    last_reading: VitalReading | None = None
+    message: str
 
 
 # ============================================================================
-# Continuous alert scenario
-#
-# Kept here because the existing vitals router imports this schema from
-# app.schemas.vitals.
+# Continuous threshold alert
 # ============================================================================
 
 class AlertScenarioStartRequest(BaseModel):
@@ -95,6 +76,9 @@ class AlertScenarioStartRequest(BaseModel):
         min_length=1,
     )
 
+    # Real process start time.
+    #
+    # This is NOT a scheduled execution time.
     start_time: datetime
 
     scenario: str = Field(
@@ -106,11 +90,15 @@ class AlertScenarioStartRequest(BaseModel):
         gt=0,
     )
 
-    # User-controlled clinical/data timestamp.
+    # Timestamp assigned to the generated clinical data.
     #
-    # The process itself still starts immediately when the API is called.
+    # If omitted, backend can use start_time.
     spoof_timestamp: datetime | None = None
 
+
+# ============================================================================
+# Continuous threshold source
+# ============================================================================
 
 class AlertScenarioSource(BaseModel):
     source_id: str
@@ -131,10 +119,10 @@ class AlertScenarioSource(BaseModel):
 
     interval_seconds: float
 
-    # Timestamp assigned to the first generated reading.
+    # Timestamp of the first synthetic reading.
     spoof_timestamp: datetime
 
-    # Number of readings already generated.
+    # Number of readings already emitted.
     sample_index: int = 0
 
     last_reading: VitalReading | None = None

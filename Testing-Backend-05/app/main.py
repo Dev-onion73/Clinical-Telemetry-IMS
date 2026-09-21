@@ -3,8 +3,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.config import settings
+from app.routers.alerts import router as alerts_router
 from app.routers.vitals import router as vitals_router
 from app.state import (
+    alert_injector_service,
+    alert_scenario_service,
     kafka_producer,
     stable_vitals_service,
 )
@@ -29,6 +32,10 @@ async def lifespan(
     print(
         "Testing Backend shutting down..."
     )
+
+    await alert_injector_service.shutdown()
+
+    await alert_scenario_service.shutdown()
 
     await stable_vitals_service.shutdown()
 
@@ -61,4 +68,8 @@ def health():
 
 app.include_router(
     vitals_router
+)
+
+app.include_router(
+    alerts_router
 )
