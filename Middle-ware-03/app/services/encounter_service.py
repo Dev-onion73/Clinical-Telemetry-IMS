@@ -13,8 +13,15 @@ class EncounterService:
         repository: Optional[EncounterRepository] = None,
         trace_service: Optional[TraceService] = None,
     ):
-        self.repository = repository or EncounterRepository()
-        self.trace_service = trace_service or TraceService()
+        self.repository = (
+            repository
+            or EncounterRepository()
+        )
+
+        self.trace_service = (
+            trace_service
+            or TraceService()
+        )
 
     def start(
         self,
@@ -40,20 +47,26 @@ class EncounterService:
             )
 
         if start_time is None:
-            start_time = datetime.now(timezone.utc)
+            start_time = datetime.now(
+                timezone.utc
+            )
 
+        # ----------------------------------------------------
         # Prevent duplicate encounter creation.
+        # ----------------------------------------------------
+
         existing = self.repository.get(
             encounter_id
         )
 
         if existing is not None:
             raise RuntimeError(
-                f"Encounter already exists: {encounter_id}"
+                f"Encounter already exists: "
+                f"{encounter_id}"
             )
 
         # ----------------------------------------------------
-        # 1. Persist Encounter
+        # 1. Persist Encounter.
         # ----------------------------------------------------
 
         encounter = self.repository.create(
@@ -67,11 +80,13 @@ class EncounterService:
             start_details=start_details,
         )
 
-        # ----------------------------------------------------
-        # 2. Create root Encounter span
-        # ----------------------------------------------------
-
         try:
+
+            # ------------------------------------------------
+            # 2. Create the 10-second Encounter Starter Span.
+            #
+            # This creates the trace identity.
+            # ------------------------------------------------
 
             encounter_span = (
                 self.trace_service.start_encounter(
@@ -80,24 +95,32 @@ class EncounterService:
                     encounter_type=encounter_type,
                     start_reason=start_reason,
                     actor_id=started_by,
-                    actor_role="ADMIN",
+                    actor_role=started_by_role,
+                    start_details=start_details,
                     start_time=start_time,
                 )
             )
 
             # ------------------------------------------------
-            # 3. Extract tracing identity
+            # 3. Extract trace identity from Starter Span.
             # ------------------------------------------------
 
-            trace_identity = serialize_span_context(
-                encounter_span
+            trace_identity = (
+                serialize_span_context(
+                    encounter_span
+                )
             )
 
-            trace_id = trace_identity["trace_id"]
-            span_id = trace_identity["span_id"]
+            trace_id = (
+                trace_identity["trace_id"]
+            )
+
+            span_id = (
+                trace_identity["span_id"]
+            )
 
             # ------------------------------------------------
-            # 4. Persist tracing identity
+            # 4. Persist Starter Span identity.
             # ------------------------------------------------
 
             self.repository.update_trace_identity(
@@ -106,7 +129,33 @@ class EncounterService:
                 span_id=span_id,
             )
 
-            # Add persisted identifiers to returned object.
+            # ------------------------------------------------
+            # 5. FINISH THE STARTER.
+            #
+            # This is deliberately done immediately.
+            #
+            # The starter becomes a 10-second completed span:
+            #
+            #     start_time
+            #         |
+            #         +---- 10 sec ----+
+            #
+            # It is then flushed to the exporter.
+            #
+            # The Span remains in encounter_span_registry so
+            # it can still provide the Encounter's trace
+            # context to Episodes and Journals.
+            # ------------------------------------------------
+
+            self.trace_service.finish_encounter_starter(
+                encounter_id=encounter_id,
+                start_time=start_time,
+            )
+
+            # ------------------------------------------------
+            # 6. Return persisted tracing identity.
+            # ------------------------------------------------
+
             encounter["trace_id"] = trace_id
             encounter["span_id"] = span_id
 
@@ -114,11 +163,11 @@ class EncounterService:
 
         except Exception:
 
-            # The database row exists but tracing failed.
+            # ------------------------------------------------
+            # Database row exists but tracing failed.
             #
-            # For this prototype, clean up the database row
-            # rather than leaving an encounter that cannot be
-            # associated with its root trace.
+            # Clean it up for this prototype.
+            # ------------------------------------------------
 
             self._delete_created_encounter(
                 encounter_id
@@ -147,7 +196,13 @@ class EncounterService:
             )
 
         if end_time is None:
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(
+                timezone.utc
+            )
+
+        # ----------------------------------------------------
+        # 1. Fetch Encounter.
+        # ----------------------------------------------------
 
         encounter = self.repository.get(
             encounter_id
@@ -155,7 +210,8 @@ class EncounterService:
 
         if encounter is None:
             raise RuntimeError(
-                f"Encounter not found: {encounter_id}"
+                f"Encounter not found: "
+                f"{encounter_id}"
             )
 
         if encounter["status"] == "CLOSED":
@@ -165,7 +221,7 @@ class EncounterService:
             )
 
         # ----------------------------------------------------
-        # 1. Persist closure
+        # 2. Persist closure.
         # ----------------------------------------------------
 
         self.repository.close(
@@ -177,15 +233,31 @@ class EncounterService:
         )
 
         # ----------------------------------------------------
-        # 2. End live Encounter span
+        # 3. Create the historical Actual Encounter Span.
+        #
+        # The Starter Span is NOT ended here because it was
+        # already completed at the 10-second point.
+        #
+        # Instead, TraceService creates:
+        #
+        # clinical.encounter
+        #
+        # with:
+        #
+        #     start = original Encounter start
+        #     end   = actual Encounter closure
+        #
+        # and makes it a child of the Starter Span.
         # ----------------------------------------------------
 
         self.trace_service.end_encounter(
             encounter_id=encounter_id,
+            start_time=encounter["start_time"],
             end_time=end_time,
             end_reason=end_reason,
             actor_id=ended_by,
             actor_role=actor_role,
+            end_details=end_details,
         )
 
     def get(
@@ -205,3 +277,4 @@ class EncounterService:
         self.repository.delete(
             encounter_id
         )
+        
