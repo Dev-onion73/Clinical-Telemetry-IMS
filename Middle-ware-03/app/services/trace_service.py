@@ -7,7 +7,7 @@ from opentelemetry.trace import Span
 from app.tracing.registry import encounter_span_registry
 from app.tracing.episode_registry import episode_span_registry
 from app.tracing.journal_registry import journal_span_registry
-
+from app.tracing.alert_registry import alert_span_registry
 
 # ============================================================
 # HELPERS
@@ -1300,3 +1300,456 @@ class TraceService:
         journal_span_registry.remove(
             journal_id
         )
+
+# ============================================================
+# ALERT THRESHOLD
+# ============================================================
+
+def start_alert(
+    self,
+    fingerprint: str,
+    encounter_id: str,
+    patient_id: str | None,
+    alert_name: str,
+    start_time: datetime,
+    attributes: dict[str, str] | None = None,
+) -> Span:
+    """
+    Start the actual alert threshold span immediately.
+
+    This span remains open for the lifetime of the alert and acts
+    as the parent for response and resolution spans.
+    """
+
+    # --------------------------------------------------------
+    # Idempotency
+    # --------------------------------------------------------
+
+    existing_span = alert_span_registry.get(
+        fingerprint
+    )
+
+    if existing_span is not None:
+        return existing_span
+
+    # --------------------------------------------------------
+    # Encounter parent
+    # --------------------------------------------------------
+
+    encounter_span = (
+        encounter_span_registry.get(
+            encounter_id
+        )
+    )
+
+    if encounter_span is None:
+        raise RuntimeError(
+            f"No Encounter trace context found "
+            f"for alert encounter_id={encounter_id!r}"
+        )
+
+    # --------------------------------------------------------
+    # Create threshold span immediately
+    # --------------------------------------------------------
+
+    alert_span = self.start_child_span(
+        name="clinical.alert.threshold",
+        parent_span=encounter_span,
+        start_time=start_time,
+    )
+
+    # --------------------------------------------------------
+    # Core attributes
+    # --------------------------------------------------------
+
+    alert_span.set_attribute(
+        "clinical.alert.fingerprint",
+        fingerprint,
+    )
+
+    alert_span.set_attribute(
+        "clinical.alert.name",
+        alert_name,
+    )
+
+    alert_span.set_attribute(
+        "clinical.alert.status",
+        "firing",
+    )
+
+    alert_span.set_attribute(
+        "clinical.alert.representation",
+        "threshold",
+    )
+
+    alert_span.set_attribute(
+        "clinical.alert.actual",
+        True,
+    )
+
+    alert_span.set_attribute(
+        "clinical.encounter.id",
+        encounter_id,
+    )
+
+    if patient_id:
+        alert_span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+    # --------------------------------------------------------
+    # Additional Grafana attributes
+    # --------------------------------------------------------
+
+    if attributes:
+        for key, value in attributes.items():
+            if value is not None:
+                alert_span.set_attribute(
+                    key,
+                    str(value),
+                )
+
+    # --------------------------------------------------------
+    # Firing event
+    # --------------------------------------------------------
+
+    event_attributes = {
+        "clinical.alert.fingerprint": fingerprint,
+        "clinical.alert.name": alert_name,
+        "clinical.encounter.id": encounter_id,
+    }
+
+    if patient_id:
+        event_attributes[
+            "clinical.patient.id"
+        ] = patient_id
+
+    alert_span.add_event(
+        name="clinical.alert.firing",
+        timestamp=datetime_to_ns(start_time),
+        attributes=event_attributes,
+    )
+
+    # --------------------------------------------------------
+    # Register immediately
+    # --------------------------------------------------------
+
+    alert_span_registry.register(
+        fingerprint=fingerprint,
+        span=alert_span,
+    )
+
+    # --------------------------------------------------------
+    # Flush immediately
+    #
+    # This is important because this span is supposed to become
+    # visible as soon as the firing webhook is processed.
+    # --------------------------------------------------------
+
+    force_trace_flush()
+
+    return alert_span
+
+
+# ============================================================
+# ALERT RESPONSE
+# ============================================================
+
+def start_alert_response(
+    self,
+    fingerprint: str,
+    response_id: str,
+    responder_id: str,
+    response_time: datetime,
+    attributes: dict[str, str] | None = None,
+) -> Span:
+    """
+    Start a human response span under the alert threshold.
+    """
+
+    alert_span = alert_span_registry.get(
+        fingerprint
+    )
+
+    if alert_span is None:
+        raise RuntimeError(
+            f"No active alert threshold found for "
+            f"fingerprint={fingerprint!r}"
+        )
+
+    response_span = self.start_child_span(
+        name="clinical.alert.response",
+        parent_span=alert_span,
+        start_time=response_time,
+    )
+
+    response_span.set_attribute(
+        "clinical.alert.response.id",
+        response_id,
+    )
+
+    response_span.set_attribute(
+        "clinical.alert.fingerprint",
+        fingerprint,
+    )
+
+    response_span.set_attribute(
+        "clinical.alert.responder.id",
+        responder_id,
+    )
+
+    response_span.set_attribute(
+        "clinical.alert.response.representation",
+        "response",
+    )
+
+    if attributes:
+        for key, value in attributes.items():
+            if value is not None:
+                response_span.set_attribute(
+                    key,
+                    str(value),
+                )
+
+    response_span.add_event(
+        name="clinical.alert.response.started",
+        timestamp=datetime_to_ns(response_time),
+        attributes={
+            "clinical.alert.fingerprint": fingerprint,
+            "clinical.alert.response.id": response_id,
+            "clinical.alert.responder.id": responder_id,
+        },
+    )
+
+    force_trace_flush()
+
+    return response_span
+
+
+# ============================================================
+# END ALERT RESPONSE
+# ============================================================
+
+def end_alert_response(
+    self,
+    response_span: Span,
+    response_id: str,
+    responder_id: str,
+    end_time: datetime,
+) -> None:
+    """
+    End a human response span.
+    """
+
+    response_span.set_attribute(
+        "clinical.alert.response.end_time",
+        end_time.isoformat(),
+    )
+
+    response_span.add_event(
+        name="clinical.alert.response.ended",
+        timestamp=datetime_to_ns(end_time),
+        attributes={
+            "clinical.alert.response.id": response_id,
+            "clinical.alert.responder.id": responder_id,
+        },
+    )
+
+    response_span.end(
+        end_time=datetime_to_ns(end_time)
+    )
+
+    force_trace_flush()
+
+
+# ============================================================
+# ALERT RESOLUTION
+# ============================================================
+
+def end_alert(
+    self,
+    fingerprint: str,
+    encounter_id: str | None,
+    patient_id: str | None,
+    alert_name: str | None,
+    start_time: datetime,
+    end_time: datetime,
+    attributes: dict[str, str] | None = None,
+) -> Span | None:
+    """
+    Resolve an alert.
+
+    The existing threshold span is the parent.
+
+    A point-in-time resolution span is created at Grafana's
+    endsAt timestamp.
+
+    The threshold span is then ended at the same timestamp.
+    """
+
+    # --------------------------------------------------------
+    # Find threshold
+    # --------------------------------------------------------
+
+    alert_span = alert_span_registry.get(
+        fingerprint
+    )
+
+    if alert_span is None:
+        # Orphaned resolution.
+        #
+        # This can happen if middleware restarted after firing
+        # but before receiving the resolved notification.
+        return None
+
+    # --------------------------------------------------------
+    # Resolve identity
+    # --------------------------------------------------------
+
+    if encounter_id is None:
+        starter_attributes = alert_span.attributes
+
+        encounter_id = starter_attributes.get(
+            "clinical.encounter.id"
+        )
+
+    if patient_id is None:
+        starter_attributes = alert_span.attributes
+
+        patient_id = starter_attributes.get(
+            "clinical.patient.id"
+        )
+
+    if alert_name is None:
+        starter_attributes = alert_span.attributes
+
+        alert_name = starter_attributes.get(
+            "clinical.alert.name",
+            "unknown",
+        )
+
+    # --------------------------------------------------------
+    # Sanity check
+    # --------------------------------------------------------
+
+    if end_time < start_time:
+        raise ValueError(
+            f"Alert end_time cannot be earlier than "
+            f"start_time for fingerprint={fingerprint!r}"
+        )
+
+    # --------------------------------------------------------
+    # Resolution span
+    #
+    # This is a child of the threshold span.
+    # It represents the resolution event itself.
+    # --------------------------------------------------------
+
+    resolution_span = self.start_child_span(
+        name="clinical.alert.resolution",
+        parent_span=alert_span,
+        start_time=end_time,
+    )
+
+    resolution_span.set_attribute(
+        "clinical.alert.fingerprint",
+        fingerprint,
+    )
+
+    resolution_span.set_attribute(
+        "clinical.alert.name",
+        alert_name,
+    )
+
+    resolution_span.set_attribute(
+        "clinical.alert.status",
+        "resolved",
+    )
+
+    resolution_span.set_attribute(
+        "clinical.alert.representation",
+        "resolution",
+    )
+
+    resolution_span.set_attribute(
+        "clinical.alert.actual",
+        True,
+    )
+
+    if encounter_id:
+        resolution_span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+
+    if patient_id:
+        resolution_span.set_attribute(
+            "clinical.patient.id",
+            patient_id,
+        )
+
+    if attributes:
+        for key, value in attributes.items():
+            if value is not None:
+                resolution_span.set_attribute(
+                    key,
+                    str(value),
+                )
+
+    resolution_span.add_event(
+        name="clinical.alert.resolved",
+        timestamp=datetime_to_ns(end_time),
+        attributes={
+            "clinical.alert.fingerprint": fingerprint,
+            "clinical.alert.name": alert_name,
+        },
+    )
+
+    # Point-in-time resolution
+    resolution_span.end(
+        end_time=datetime_to_ns(end_time)
+    )
+
+    # --------------------------------------------------------
+    # End the threshold parent
+    # --------------------------------------------------------
+
+    alert_span.set_attribute(
+        "clinical.alert.status",
+        "resolved",
+    )
+
+    alert_span.set_attribute(
+        "clinical.alert.logical_end_time",
+        end_time.isoformat(),
+    )
+
+    alert_span.add_event(
+        name="clinical.alert.threshold.ended",
+        timestamp=datetime_to_ns(end_time),
+        attributes={
+            "clinical.alert.fingerprint": fingerprint,
+            "clinical.alert.name": alert_name,
+        },
+    )
+
+    alert_span.end(
+        end_time=datetime_to_ns(end_time)
+    )
+
+    # --------------------------------------------------------
+    # Export immediately
+    # --------------------------------------------------------
+
+    force_trace_flush()
+
+    # --------------------------------------------------------
+    # Remove lifecycle context
+    # --------------------------------------------------------
+
+    alert_span_registry.remove(
+        fingerprint
+    )
+
+    return alert_span

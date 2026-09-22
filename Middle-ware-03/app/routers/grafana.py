@@ -2,6 +2,8 @@ from pprint import pprint
 
 from fastapi import APIRouter, Request
 
+from app.services.alarm_service import alarm_service
+
 
 router = APIRouter(
     prefix="/webhooks/grafana",
@@ -27,7 +29,6 @@ router = APIRouter(
                                 "status": "firing",
                                 "labels": {
                                     "alertname": "spo2_high_low",
-                                    "patient_id": "PAT-0001",
                                     "encounter_id": "E1",
                                     "device_id": "DEV-001",
                                 },
@@ -35,7 +36,7 @@ router = APIRouter(
                                 "startsAt": "2026-09-21T14:39:20Z",
                                 "endsAt": "0001-01-01T00:00:00Z",
                                 "values": {
-                                    "B": 91.0
+                                    "B": 91.0,
                                 },
                                 "fingerprint": "example-fingerprint",
                             }
@@ -51,19 +52,11 @@ async def receive_grafana_alert(
 ):
     payload = await request.json()
 
-    print()
-    print("=" * 80)
-    print("[GRAFANA WEBHOOK] ALERT RECEIVED")
-    print("=" * 80)
+    print("\n================ GRAFANA ALERT ================")
+    pprint(payload)
+    print("================================================\n")
 
-    pprint(
-        payload,
-        sort_dicts=False,
-        width=120,
-    )
-
-    print("=" * 80)
-    print()
+    alarm_service.process_grafana_payload(payload)
 
     return {
         "status": "received",
