@@ -33,13 +33,13 @@ class StableVitalsService:
         self,
         request: StableVitalsStartRequest,
     ) -> StableVitalsSource:
-        source_id = (
-            f"VS-{uuid4().hex[:8].upper()}"
-        )
+        source_id = f"VS-{uuid4().hex[:8].upper()}"
 
         source = StableVitalsSource(
             source_id=source_id,
             patient_id=request.patient_id,
+            encounter_id=request.encounter_id,
+            device_id=request.device_id,
             status="RUNNING",
             started_at=request.start_time,
             metrics=request.metrics,
@@ -66,10 +66,7 @@ class StableVitalsService:
         if source is None:
             return None
 
-        task = self._tasks.pop(
-            source_id,
-            None,
-        )
+        task = self._tasks.pop(source_id, None)
 
         if task is not None:
             task.cancel()
@@ -92,26 +89,20 @@ class StableVitalsService:
     def list_sources(
         self,
     ) -> list[StableVitalsSource]:
-        return list(
-            self._sources.values()
-        )
+        return list(self._sources.values())
 
     def get_source(
         self,
         source_id: str,
     ) -> StableVitalsSource | None:
-        return self._sources.get(
-            source_id
-        )
+        return self._sources.get(source_id)
 
     async def _run_generator(
         self,
         source_id: str,
     ) -> None:
         while True:
-            source = self._sources.get(
-                source_id
-            )
+            source = self._sources.get(source_id)
 
             if source is None:
                 return
@@ -119,21 +110,15 @@ class StableVitalsService:
             if source.status != "RUNNING":
                 return
 
-            reading = self._generate_reading(
-                source
+            reading = self._generate_reading(source)
+
+            self._sources[source_id] = source.model_copy(
+                update={
+                    "last_reading": reading,
+                }
             )
 
-            self._sources[source_id] = (
-                source.model_copy(
-                    update={
-                        "last_reading": reading,
-                    }
-                )
-            )
-
-            await self._publish_reading(
-                reading
-            )
+            await self._publish_reading(reading)
 
             await asyncio.sleep(
                 source.interval_seconds
@@ -147,7 +132,7 @@ class StableVitalsService:
             topic=settings.kafka_vitals_topic,
             key=reading.patient_id,
             payload=reading.model_dump(
-                mode="json"
+                mode="json",
             ),
         )
 
@@ -155,34 +140,27 @@ class StableVitalsService:
         self,
         source: StableVitalsSource,
     ) -> VitalReading:
-        timestamp = datetime.now(
-            timezone.utc
-        )
+        timestamp = datetime.now(timezone.utc)
 
         metrics: dict[str, float] = {}
 
-        for (
-            metric_name,
-            base_value,
-        ) in source.metrics.items():
-            metrics[metric_name] = (
-                self._stable_value(
-                    base_value
-                )
+        for metric_name, base_value in source.metrics.items():
+            metrics[metric_name] = self._stable_value(
+                base_value
             )
 
         reading = VitalReading(
             source_id=source.source_id,
             patient_id=source.patient_id,
+            encounter_id=source.encounter_id,
+            device_id=source.device_id,
             timestamp=timestamp,
             metrics=metrics,
         )
 
         print(
             "[DUMMY VITALS]",
-            reading.model_dump(
-                mode="json"
-            ),
+            reading.model_dump(mode="json"),
         )
 
         return reading
@@ -208,10 +186,7 @@ class StableVitalsService:
 
         self._tasks.clear()
 
-        for (
-            source_id,
-            task,
-        ) in tasks:
+        for source_id, task in tasks:
             task.cancel()
 
             try:
@@ -219,10 +194,7 @@ class StableVitalsService:
             except asyncio.CancelledError:
                 pass
 
-        for (
-            source_id,
-            source,
-        ) in list(
+        for source_id, source in list(
             self._sources.items()
         ):
             self._sources[source_id] = (

@@ -1,5 +1,6 @@
+
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from opentelemetry import trace
 from opentelemetry.trace import Span
@@ -7,6 +8,7 @@ from opentelemetry.trace import Span
 from app.tracing.registry import encounter_span_registry
 from app.tracing.episode_registry import episode_span_registry
 from app.tracing.journal_registry import journal_span_registry
+from app.tracing.alert_registry import alert_span_registry
 
 
 # ============================================================
@@ -37,7 +39,7 @@ def datetime_to_ns(
 def force_trace_flush() -> None:
     """
     Force the configured OpenTelemetry tracer provider
-    to export any completed spans immediately when supported.
+    to export completed spans immediately when supported.
     """
 
     provider = trace.get_tracer_provider()
@@ -123,10 +125,6 @@ class TraceService:
                 timezone.utc
             )
 
-        # ----------------------------------------------------
-        # Backward-compatible aliases
-        # ----------------------------------------------------
-
         if actor_id is None:
             actor_id = started_by
 
@@ -135,10 +133,6 @@ class TraceService:
 
         if start_reason is None:
             start_reason = start_details
-
-        # ----------------------------------------------------
-        # Starter span
-        # ----------------------------------------------------
 
         encounter_span = self.tracer.start_span(
             name="clinical.encounter.starter",
@@ -200,10 +194,6 @@ class TraceService:
             "clinical.encounter.logical_start_time",
             start_time.isoformat(),
         )
-
-        # ----------------------------------------------------
-        # Started event
-        # ----------------------------------------------------
 
         event_attributes = {
             "clinical.encounter.id": encounter_id,
@@ -297,200 +287,176 @@ class TraceService:
         closure_by_role: Optional[str] = None,
         end_reason: Optional[str] = None,
         end_details: Optional[str] = None,
-) ->     None:
-    
+    ) -> None:
+
         encounter_starter = (
             encounter_span_registry.get(
                 encounter_id
             )
         )
-    
+
         if encounter_starter is None:
             raise RuntimeError(
                 f"No Encounter trace context found "
                 f"for {encounter_id}"
             )
-    
-        # --------------------------------------------------------
-        # Resolve lifecycle information from the starter span
-        # --------------------------------------------------------
-    
+
         starter_attributes = getattr(
             encounter_starter,
             "_attributes",
             None,
         )
-    
+
         if starter_attributes is None:
             starter_attributes = {}
-    
+
         if patient_id is None:
             patient_id = starter_attributes.get(
                 "clinical.patient.id"
             )
-    
+
         if encounter_type is None:
             encounter_type = starter_attributes.get(
                 "clinical.encounter.type"
             )
-    
+
         if patient_id is None:
             raise ValueError(
                 f"patient_id could not be resolved "
                 f"for Encounter {encounter_id}"
             )
-    
+
         if encounter_type is None:
             raise ValueError(
                 f"encounter_type could not be resolved "
                 f"for Encounter {encounter_id}"
             )
-    
-        # --------------------------------------------------------
-        # Resolve start time
-        # --------------------------------------------------------
-    
+
         if start_time is None:
-        
+
             logical_start = starter_attributes.get(
                 "clinical.encounter.logical_start_time"
             )
-    
+
             if logical_start is None:
                 raise ValueError(
                     f"start_time could not be resolved "
                     f"for Encounter {encounter_id}"
                 )
-    
+
             start_time = datetime.fromisoformat(
                 logical_start
             )
-    
-        # --------------------------------------------------------
-        # End time is required
-        # --------------------------------------------------------
-    
+
         if end_time is None:
             raise ValueError(
                 f"end_time is required to end "
                 f"Encounter {encounter_id}"
             )
-    
+
         if end_time < start_time:
             raise ValueError(
                 f"end_time cannot be earlier than "
                 f"start_time for Encounter "
                 f"{encounter_id}"
             )
-    
-        # --------------------------------------------------------
-        # Backward-compatible closure aliases
-        # --------------------------------------------------------
-    
+
         if actor_id is None:
             actor_id = closure_by
-    
+
         if actor_role is None:
             actor_role = closure_by_role
-    
-        # --------------------------------------------------------
-        # Actual historical span
-        # --------------------------------------------------------
-    
+
         actual_span = self.start_child_span(
             name="clinical.encounter",
             parent_span=encounter_starter,
             start_time=start_time,
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.id",
             encounter_id,
         )
-    
+
         actual_span.set_attribute(
             "clinical.patient.id",
             patient_id,
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.type",
             encounter_type,
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.actual",
             True,
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.representation",
             "actual",
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.logical_start_time",
             start_time.isoformat(),
         )
-    
+
         actual_span.set_attribute(
             "clinical.encounter.logical_end_time",
             end_time.isoformat(),
         )
-    
+
         if actor_id is not None:
             actual_span.set_attribute(
                 "clinical.encounter.closure_by",
                 actor_id,
             )
-    
+
         if actor_role is not None:
             actual_span.set_attribute(
                 "clinical.encounter.closure_by_role",
                 actor_role,
             )
-    
+
         if end_reason is not None:
             actual_span.set_attribute(
                 "clinical.encounter.end_reason",
                 end_reason,
             )
-    
+
         if end_details is not None:
             actual_span.set_attribute(
                 "clinical.encounter.end_details",
                 end_details,
             )
-    
-        # --------------------------------------------------------
-        # End event
-        # --------------------------------------------------------
-    
+
         event_attributes = {
             "clinical.encounter.id": encounter_id,
             "clinical.patient.id": patient_id,
         }
-    
+
         if actor_id is not None:
             event_attributes[
                 "clinical.actor.id"
             ] = actor_id
-    
+
         if actor_role is not None:
             event_attributes[
                 "clinical.actor.role"
             ] = actor_role
-    
+
         if end_reason is not None:
             event_attributes[
                 "clinical.encounter.end_reason"
             ] = end_reason
-    
+
         if end_details is not None:
             event_attributes[
                 "clinical.encounter.end_details"
             ] = end_details
-    
+
         actual_span.add_event(
             name="clinical.encounter.ended",
             timestamp=datetime_to_ns(
@@ -498,19 +464,15 @@ class TraceService:
             ),
             attributes=event_attributes,
         )
-    
-        # --------------------------------------------------------
-        # End + flush + remove lifecycle context
-        # --------------------------------------------------------
-    
+
         actual_span.end(
             end_time=datetime_to_ns(
                 end_time
             )
         )
-    
+
         force_trace_flush()
-    
+
         encounter_span_registry.remove(
             encounter_id
         )
@@ -684,19 +646,11 @@ class TraceService:
                 f"{episode_id}"
             )
 
-        # ----------------------------------------------------
-        # Backward-compatible closure aliases
-        # ----------------------------------------------------
-
         if actor_id is None:
             actor_id = closure_by
 
         if actor_role is None:
             actor_role = closure_by_role
-
-        # ----------------------------------------------------
-        # Actual historical span
-        # ----------------------------------------------------
 
         actual_span = self.start_child_span(
             name="clinical.episode",
@@ -751,10 +705,6 @@ class TraceService:
                 actor_role,
             )
 
-        # ----------------------------------------------------
-        # End event
-        # ----------------------------------------------------
-
         event_attributes = {
             "clinical.episode.id": episode_id,
             "clinical.patient.id": patient_id,
@@ -778,10 +728,6 @@ class TraceService:
             ),
             attributes=event_attributes,
         )
-
-        # ----------------------------------------------------
-        # End + flush + remove lifecycle context
-        # ----------------------------------------------------
 
         actual_span.end(
             end_time=datetime_to_ns(
@@ -813,10 +759,6 @@ class TraceService:
 
         parent_span = None
 
-        # ----------------------------------------------------
-        # Episode parent if supplied
-        # ----------------------------------------------------
-
         if episode_id is not None:
 
             parent_span = (
@@ -831,10 +773,6 @@ class TraceService:
                     f"for {episode_id}"
                 )
 
-        # ----------------------------------------------------
-        # Otherwise Encounter parent
-        # ----------------------------------------------------
-
         if parent_span is None:
 
             parent_span = (
@@ -848,10 +786,6 @@ class TraceService:
                 f"No Encounter trace context found "
                 f"for {encounter_id}"
             )
-
-        # ----------------------------------------------------
-        # Point-in-time journal span
-        # ----------------------------------------------------
 
         journal_span = self.start_child_span(
             name="clinical.journal.event",
@@ -916,10 +850,6 @@ class TraceService:
             },
         )
 
-        # ----------------------------------------------------
-        # Point event: start == end
-        # ----------------------------------------------------
-
         journal_span.end(
             end_time=datetime_to_ns(
                 timestamp
@@ -948,10 +878,6 @@ class TraceService:
 
         parent_span = None
 
-        # ----------------------------------------------------
-        # Episode parent if supplied
-        # ----------------------------------------------------
-
         if episode_id is not None:
 
             parent_span = (
@@ -966,10 +892,6 @@ class TraceService:
                     f"for {episode_id}"
                 )
 
-        # ----------------------------------------------------
-        # Otherwise Encounter parent
-        # ----------------------------------------------------
-
         if parent_span is None:
 
             parent_span = (
@@ -983,10 +905,6 @@ class TraceService:
                 f"No Encounter trace context found "
                 f"for {encounter_id}"
             )
-
-        # ----------------------------------------------------
-        # Starter span
-        # ----------------------------------------------------
 
         journal_span = self.start_child_span(
             name="clinical.journal.activity.starter",
@@ -1128,19 +1046,11 @@ class TraceService:
                 f"found for {journal_id}"
             )
 
-        # ----------------------------------------------------
-        # Backward-compatible closure aliases
-        # ----------------------------------------------------
-
         if actor_id is None:
             actor_id = closure_by
 
         if actor_role is None:
             actor_role = closure_by_role
-
-        # ----------------------------------------------------
-        # Required lifecycle information
-        # ----------------------------------------------------
 
         if patient_id is None:
             raise ValueError(
@@ -1172,10 +1082,6 @@ class TraceService:
                 f"start_time for Journal Activity "
                 f"{journal_id}"
             )
-
-        # ----------------------------------------------------
-        # Actual historical span
-        # ----------------------------------------------------
 
         actual_span = self.start_child_span(
             name="clinical.journal.activity",
@@ -1247,10 +1153,6 @@ class TraceService:
                 actor_role,
             )
 
-        # ----------------------------------------------------
-        # End event
-        # ----------------------------------------------------
-
         event_attributes = {
             "clinical.journal.id": journal_id,
             "clinical.patient.id": patient_id,
@@ -1285,10 +1187,6 @@ class TraceService:
             attributes=event_attributes,
         )
 
-        # ----------------------------------------------------
-        # End + flush + remove lifecycle context
-        # ----------------------------------------------------
-
         actual_span.end(
             end_time=datetime_to_ns(
                 end_time
@@ -1300,3 +1198,657 @@ class TraceService:
         journal_span_registry.remove(
             journal_id
         )
+
+    # ========================================================
+    # ALERT HELPERS
+    # ========================================================
+
+    @staticmethod
+    def _alert_span_ids(
+        span: Span,
+    ) -> tuple[str, str]:
+
+        context = span.get_span_context()
+
+        return (
+            format(
+                context.trace_id,
+                "032x",
+            ),
+            format(
+                context.span_id,
+                "016x",
+            ),
+        )
+
+    @staticmethod
+    def _apply_alert_attributes(
+        span: Span,
+        attributes: dict[str, Any] | None,
+    ) -> None:
+
+        if not attributes:
+            return
+
+        for key, value in attributes.items():
+
+            if value is None:
+                continue
+
+            try:
+                span.set_attribute(
+                    key,
+                    value,
+                )
+
+            except Exception as exc:
+                print(
+                    "[ALERT TRACE] WARNING: "
+                    f"failed to set attribute "
+                    f"{key!r}={value!r}: {exc}"
+                )
+
+    # ========================================================
+    # ALERT THRESHOLD
+    #
+    # Hierarchy:
+    #
+    # clinical.encounter
+    #     └── clinical.alert.threshold
+    #             └── clinical.alert.resolution
+    #
+    # The threshold starts immediately when Grafana sends
+    # "firing" and remains open until "resolved".
+    # ========================================================
+
+    def start_alert(
+        self,
+        fingerprint: str,
+        encounter_id: str,
+        patient_id: str | None,
+        alert_name: str,
+        starts_at: datetime,
+        attributes: dict[str, Any] | None = None,
+    ) -> Span:
+
+        existing_span = (
+            alert_span_registry.get(
+                fingerprint
+            )
+        )
+
+        if existing_span is not None:
+
+            trace_id, span_id = (
+                self._alert_span_ids(
+                    existing_span
+                )
+            )
+
+            print(
+                "\n================ ALERT TRACE ================"
+            )
+
+            print(
+                "[ALERT TRACE] DUPLICATE FIRING"
+            )
+
+            print(
+                f"  fingerprint : {fingerprint}"
+            )
+
+            print(
+                f"  trace_id    : {trace_id}"
+            )
+
+            print(
+                f"  span_id     : {span_id}"
+            )
+
+            print(
+                "  action      : existing threshold reused"
+            )
+
+            print(
+                "=============================================\n"
+            )
+
+            return existing_span
+
+        encounter_span = (
+            encounter_span_registry.get(
+                encounter_id
+            )
+        )
+
+        if encounter_span is None:
+            raise RuntimeError(
+                "No active encounter span found "
+                f"for encounter_id={encounter_id!r}"
+            )
+
+        (
+            encounter_trace_id,
+            encounter_span_id,
+        ) = self._alert_span_ids(
+            encounter_span
+        )
+
+        threshold_span = (
+            self.start_child_span(
+                name="clinical.alert.threshold",
+                parent_span=encounter_span,
+                start_time=starts_at,
+            )
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.fingerprint",
+            fingerprint,
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.name",
+            alert_name,
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.status",
+            "firing",
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.phase",
+            "threshold",
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.actual",
+            True,
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.representation",
+            "threshold",
+        )
+
+        threshold_span.set_attribute(
+            "clinical.encounter.id",
+            encounter_id,
+        )
+
+        threshold_span.set_attribute(
+            "clinical.alert.starts_at",
+            starts_at.isoformat(),
+        )
+
+        if patient_id:
+            threshold_span.set_attribute(
+                "clinical.patient.id",
+                patient_id,
+            )
+
+        self._apply_alert_attributes(
+            threshold_span,
+            attributes,
+        )
+
+        event_attributes = {
+            "clinical.alert.fingerprint":
+                fingerprint,
+            "clinical.alert.name":
+                alert_name,
+            "clinical.encounter.id":
+                encounter_id,
+        }
+
+        if patient_id:
+            event_attributes[
+                "clinical.patient.id"
+            ] = patient_id
+
+        threshold_span.add_event(
+            name="clinical.alert.firing",
+            timestamp=datetime_to_ns(
+                starts_at
+            ),
+            attributes=event_attributes,
+        )
+
+        alert_span_registry.register(
+            fingerprint=fingerprint,
+            span=threshold_span,
+        )
+
+        (
+            trace_id,
+            threshold_span_id,
+        ) = self._alert_span_ids(
+            threshold_span
+        )
+
+        print(
+            "\n================ ALERT TRACE ================"
+        )
+
+        print(
+            "[ALERT TRACE] FIRING"
+        )
+
+        print(
+            f"  fingerprint : {fingerprint}"
+        )
+
+        print(
+            f"  alert       : {alert_name}"
+        )
+
+        print(
+            f"  encounter   : {encounter_id}"
+        )
+
+        print(
+            f"  patient     : {patient_id}"
+        )
+
+        print(
+            f"  starts_at   : {starts_at.isoformat()}"
+        )
+
+        print()
+
+        print(
+            "  ENCOUNTER PARENT"
+        )
+
+        print(
+            f"    trace_id  : {encounter_trace_id}"
+        )
+
+        print(
+            f"    span_id   : {encounter_span_id}"
+        )
+
+        print()
+
+        print(
+            "  THRESHOLD"
+        )
+
+        print(
+            f"    trace_id  : {trace_id}"
+        )
+
+        print(
+            f"    span_id   : {threshold_span_id}"
+        )
+
+        print(
+            f"    parent    : {encounter_span_id}"
+        )
+
+        print()
+
+        print(
+            "  status      : OPEN"
+        )
+
+        print(
+            "  registry    : REGISTERED"
+        )
+
+        print(
+            "  export      : WAITING FOR SPAN END"
+        )
+
+        print(
+            "=============================================\n"
+        )
+
+        return threshold_span
+
+    # ========================================================
+    # ALERT RESOLUTION
+    # ========================================================
+
+    def end_alert(
+        self,
+        fingerprint: str,
+        encounter_id: str | None,
+        patient_id: str | None,
+        alert_name: str | None,
+        starts_at: datetime,
+        ends_at: datetime,
+        attributes: dict[str, Any] | None = None,
+    ) -> Span | None:
+
+        alert_span = (
+            alert_span_registry.get(
+                fingerprint
+            )
+        )
+
+        if alert_span is None:
+
+            print(
+                "\n================ ALERT TRACE ================"
+            )
+
+            print(
+                "[ALERT TRACE] ORPHANED RESOLUTION"
+            )
+
+            print(
+                f"  fingerprint : {fingerprint}"
+            )
+
+            print(
+                "  reason      : no active threshold "
+                "span in registry"
+            )
+
+            print(
+                "  action      : resolution ignored"
+            )
+
+            print(
+                "=============================================\n"
+            )
+
+            return None
+
+        threshold_attributes = (
+            getattr(
+                alert_span,
+                "_attributes",
+                {},
+            )
+            or {}
+        )
+
+        if encounter_id is None:
+            encounter_id = (
+                threshold_attributes.get(
+                    "clinical.encounter.id"
+                )
+            )
+
+        if patient_id is None:
+            patient_id = (
+                threshold_attributes.get(
+                    "clinical.patient.id"
+                )
+            )
+
+        if alert_name is None:
+            alert_name = (
+                threshold_attributes.get(
+                    "clinical.alert.name",
+                    "unknown",
+                )
+            )
+
+        if ends_at < starts_at:
+            raise ValueError(
+                f"Alert ends_at cannot be earlier "
+                f"than starts_at for "
+                f"fingerprint={fingerprint!r}"
+            )
+
+        duration_seconds = (
+            ends_at - starts_at
+        ).total_seconds()
+
+        resolution_span = (
+            self.start_child_span(
+                name="clinical.alert.resolution",
+                parent_span=alert_span,
+                start_time=ends_at,
+            )
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.fingerprint",
+            fingerprint,
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.name",
+            alert_name,
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.status",
+            "resolved",
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.phase",
+            "resolution",
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.actual",
+            True,
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.representation",
+            "resolution",
+        )
+
+        if encounter_id:
+            resolution_span.set_attribute(
+                "clinical.encounter.id",
+                encounter_id,
+            )
+
+        if patient_id:
+            resolution_span.set_attribute(
+                "clinical.patient.id",
+                patient_id,
+            )
+
+        resolution_span.set_attribute(
+            "clinical.alert.starts_at",
+            starts_at.isoformat(),
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.ends_at",
+            ends_at.isoformat(),
+        )
+
+        resolution_span.set_attribute(
+            "clinical.alert.duration_seconds",
+            duration_seconds,
+        )
+
+        self._apply_alert_attributes(
+            resolution_span,
+            attributes,
+        )
+
+        resolution_span.add_event(
+            name="clinical.alert.resolved",
+            timestamp=datetime_to_ns(
+                ends_at
+            ),
+            attributes={
+                "clinical.alert.fingerprint":
+                    fingerprint,
+                "clinical.alert.name":
+                    alert_name,
+                "clinical.alert.duration_seconds":
+                    duration_seconds,
+            },
+        )
+
+        resolution_span.end(
+            end_time=datetime_to_ns(
+                ends_at
+            )
+        )
+
+        alert_span.set_attribute(
+            "clinical.alert.status",
+            "resolved",
+        )
+
+        alert_span.set_attribute(
+            "clinical.alert.ends_at",
+            ends_at.isoformat(),
+        )
+
+        alert_span.set_attribute(
+            "clinical.alert.duration_seconds",
+            duration_seconds,
+        )
+
+        alert_span.add_event(
+            name="clinical.alert.threshold.ended",
+            timestamp=datetime_to_ns(
+                ends_at
+            ),
+            attributes={
+                "clinical.alert.fingerprint":
+                    fingerprint,
+                "clinical.alert.name":
+                    alert_name,
+                "clinical.alert.duration_seconds":
+                    duration_seconds,
+            },
+        )
+
+        alert_span.end(
+            end_time=datetime_to_ns(
+                ends_at
+            )
+        )
+
+        (
+            threshold_trace_id,
+            threshold_span_id,
+        ) = self._alert_span_ids(
+            alert_span
+        )
+
+        (
+            resolution_trace_id,
+            resolution_span_id,
+        ) = self._alert_span_ids(
+            resolution_span
+        )
+
+        print(
+            "\n================ ALERT TRACE ================"
+        )
+
+        print(
+            "[ALERT TRACE] RESOLVED"
+        )
+
+        print(
+            f"  fingerprint : {fingerprint}"
+        )
+
+        print(
+            f"  alert       : {alert_name}"
+        )
+
+        print(
+            f"  encounter   : {encounter_id}"
+        )
+
+        print(
+            f"  starts_at   : {starts_at.isoformat()}"
+        )
+
+        print(
+            f"  ends_at     : {ends_at.isoformat()}"
+        )
+
+        print(
+            f"  duration    : {duration_seconds:.3f} seconds"
+        )
+
+        print()
+
+        print(
+            "  THRESHOLD"
+        )
+
+        print(
+            f"    trace_id  : {threshold_trace_id}"
+        )
+
+        print(
+            f"    span_id   : {threshold_span_id}"
+        )
+
+        print()
+
+        print(
+            "  RESOLUTION"
+        )
+
+        print(
+            f"    trace_id  : {resolution_trace_id}"
+        )
+
+        print(
+            f"    span_id   : {resolution_span_id}"
+        )
+
+        print(
+            f"    parent    : {threshold_span_id}"
+        )
+
+        print()
+
+        print(
+            "  SAME TRACE"
+        )
+
+        print(
+            f"    {threshold_trace_id == resolution_trace_id}"
+        )
+
+        print()
+
+        print(
+            "  status      : CLOSED"
+        )
+
+        print(
+            "  registry    : REMOVED"
+        )
+
+        print(
+            "  export      : FLUSHING"
+        )
+
+        print(
+            "=============================================\n"
+        )
+
+        alert_span_registry.remove(
+            fingerprint
+        )
+
+        force_trace_flush()
+
+        print(
+            "[ALERT TRACE] EXPORT FLUSH COMPLETE"
+        )
+        print(
+            f"[ALERT TRACE] trace_id={threshold_trace_id}"
+        )
+        print(
+            f"[ALERT TRACE] threshold_span_id={threshold_span_id}"
+        )
+        print(
+            f"[ALERT TRACE] resolution_span_id={resolution_span_id}"
+        )
+
+        return alert_span

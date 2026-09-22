@@ -1,6 +1,5 @@
-import json
-
 from aiokafka import AIOKafkaProducer
+import json
 
 from app.config import settings
 

@@ -47,6 +47,18 @@ def utc_now():
     ).isoformat()
 
 
+def optional_timestamp(
+    value: str,
+):
+    """
+    Return the user-provided timestamp if present.
+
+    Returning None allows the middleware service layer
+    to fall back to the current UTC time.
+    """
+    return value.strip() or None
+
+
 def add_timeline_item(
     item: dict,
 ):
@@ -301,6 +313,13 @@ with st.form(
             ),
         )
 
+        encounter_start_time = st.text_input(
+            "Start time (optional)",
+            placeholder=(
+                "2026-09-21T08:00:00+00:00"
+            ),
+        )
+
     start_submitted = (
         st.form_submit_button(
             "Start Encounter",
@@ -346,7 +365,9 @@ if start_submitted:
                 start_details.strip()
                 or None
             ),
-            "start_time": utc_now(),
+            "start_time": optional_timestamp(
+                encounter_start_time
+            ),
         }
 
         try:
@@ -542,8 +563,10 @@ with episode_start_col:
         )
 
         episode_start_time = st.text_input(
-            "Start time",
-            value=utc_now(),
+            "Start time (optional)",
+            placeholder=(
+                "2026-09-21T08:00:00+00:00"
+            ),
         )
 
         episode_submitted = (
@@ -598,8 +621,8 @@ with episode_start_col:
                     ]
                 ),
                 "content": content.strip(),
-                "start_time": (
-                    episode_start_time.strip()
+                "start_time": optional_timestamp(
+                    episode_start_time
                 ),
             }
 
@@ -722,6 +745,13 @@ if episode:
                 "close_episode_form"
             ):
 
+                episode_end_time = st.text_input(
+                    "End time (optional)",
+                    placeholder=(
+                        "2026-09-21T16:30:00+00:00"
+                    ),
+                )
+
                 close_episode_submitted = (
                     st.form_submit_button(
                         "Close Episode",
@@ -735,7 +765,9 @@ if episode:
 
                 payload = {
                     "closure_by": staff_id,
-                    "end_time": utc_now(),
+                    "end_time": optional_timestamp(
+                        episode_end_time
+                    ),
                 }
 
                 try:
@@ -810,8 +842,10 @@ with st.form(
     )
 
     event_timestamp = st.text_input(
-        "Timestamp",
-        value=utc_now(),
+        "Timestamp (optional)",
+        placeholder=(
+            "2026-09-21T10:15:00+00:00"
+        ),
     )
 
     event_episode_id = st.text_input(
@@ -859,8 +893,8 @@ if event_submitted:
             "content": (
                 event_content.strip()
             ),
-            "timestamp": (
-                event_timestamp.strip()
+            "timestamp": optional_timestamp(
+                event_timestamp
             ),
             "episode_id": (
                 event_episode_id.strip()
@@ -931,12 +965,16 @@ with st.form(
 
     fixed_start_time = st.text_input(
         "Start time",
-        value=utc_now(),
+        placeholder=(
+            "2026-09-21T10:00:00+00:00"
+        ),
     )
 
     fixed_end_time = st.text_input(
         "End time",
-        value=utc_now(),
+        placeholder=(
+            "2026-09-21T10:30:00+00:00"
+        ),
     )
 
     fixed_start_reason = st.text_input(
@@ -976,6 +1014,18 @@ if fixed_submitted:
 
         st.error(
             "Activity content is required."
+        )
+
+    elif not fixed_start_time.strip():
+
+        st.error(
+            "Start time is required."
+        )
+
+    elif not fixed_end_time.strip():
+
+        st.error(
+            "End time is required."
         )
 
     elif not fixed_start_reason.strip():
@@ -1089,8 +1139,10 @@ with st.form(
     )
 
     ongoing_start_time = st.text_input(
-        "Start time",
-        value=utc_now(),
+        "Start time (optional)",
+        placeholder=(
+            "2026-09-21T11:00:00+00:00"
+        ),
     )
 
     ongoing_start_reason = st.text_input(
@@ -1150,8 +1202,8 @@ if ongoing_start_submitted:
             "content": (
                 ongoing_content.strip()
             ),
-            "start_time": (
-                ongoing_start_time.strip()
+            "start_time": optional_timestamp(
+                ongoing_start_time
             ),
             "start_reason": (
                 ongoing_start_reason.strip()
@@ -1226,8 +1278,10 @@ if ongoing_activity:
         ):
 
             ongoing_end_time = st.text_input(
-                "End time",
-                value=utc_now(),
+                "End time (optional)",
+                placeholder=(
+                    "2026-09-21T12:00:00+00:00"
+                ),
             )
 
             ongoing_end_reason = st.text_input(
@@ -1255,8 +1309,8 @@ if ongoing_activity:
             else:
 
                 payload = {
-                    "end_time": (
-                        ongoing_end_time.strip()
+                    "end_time": optional_timestamp(
+                        ongoing_end_time
                     ),
                     "end_reason": (
                         ongoing_end_reason.strip()
@@ -1317,6 +1371,13 @@ if encounter_status != "CLOSED":
         "close_encounter_form"
     ):
 
+        encounter_end_time = st.text_input(
+            "End time (optional)",
+            placeholder=(
+                "2026-09-21T16:30:00+00:00"
+            ),
+        )
+
         encounter_end_reason = (
             st.text_input(
                 "End reason",
@@ -1364,7 +1425,9 @@ if encounter_status != "CLOSED":
                     encounter_end_details.strip()
                     or None
                 ),
-                "end_time": utc_now(),
+                "end_time": optional_timestamp(
+                    encounter_end_time
+                ),
             }
 
             try:
