@@ -5,6 +5,7 @@ from app.tracing.provider import configure_tracing
 from app.routers import (
     encounters,
     episodes,
+    grafana,
     journals,
 )
 
@@ -42,6 +43,10 @@ app.include_router(
 
 app.include_router(
     journals.router
+)
+
+app.include_router(
+    grafana.router
 )
 
 
